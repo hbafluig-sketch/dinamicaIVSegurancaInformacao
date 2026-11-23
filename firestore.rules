@@ -1,0 +1,157 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global catch-all deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidScene(data, sceneId) {
+      return data.keys().hasAll(['id', 'order', 'name', 'imageUrl', 'isBuiltin', 'points', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'order', 'name', 'imageUrl', 'thumbUrl', 'naturalWidth', 'naturalHeight', 'hideLegendPct', 'isBuiltin', 'points', 'updatedAt'])
+        && data.id is string && data.id == sceneId && isValidId(data.id)
+        && data.order is number && data.order >= 0 && data.order <= 1000
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 700000
+        && (!('thumbUrl' in data) || (data.thumbUrl is string && data.thumbUrl.size() <= 120000))
+        && (!('naturalWidth' in data) || (data.naturalWidth is number && data.naturalWidth > 0 && data.naturalWidth <= 10000))
+        && (!('naturalHeight' in data) || (data.naturalHeight is number && data.naturalHeight > 0 && data.naturalHeight <= 10000))
+        && (!('hideLegendPct' in data) || (data.hideLegendPct is number && data.hideLegendPct >= 0 && data.hideLegendPct <= 60))
+        && data.isBuiltin is bool
+        && data.points is list && data.points.size() <= 60
+        && (data.points.size() == 0 || data.points[0] is map)
+        && data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    function isValidWheelConfig(data) {
+      return data.keys().hasAll(['factories', 'items', 'quizEnabled', 'allowDuplicateRegistration', 'updatedAt'])
+        && data.keys().hasOnly(['factories', 'items', 'quizEnabled', 'allowDuplicateRegistration', 'version', 'updatedAt'])
+        && data.factories is list && data.factories.size() >= 1 && data.factories.size() <= 40
+        && data.factories[0] is string
+        && data.items is list && data.items.size() >= 2 && data.items.size() <= 24
+        && data.items[0] is map
+        && data.quizEnabled is bool
+        && data.allowDuplicateRegistration is bool
+        && (!('version' in data) || (data.version is number && data.version >= 1 && data.version <= 100))
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidFactoryStock(data) {
+      return data.keys().hasAll(['stocks', 'updatedAt'])
+        && data.keys().hasOnly(['stocks', 'updatedAt'])
+        && data.stocks is map && data.stocks.size() <= 40
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidQuizBank(data) {
+      return data.keys().hasAll(['questions', 'updatedAt'])
+        && data.keys().hasOnly(['questions', 'updatedAt'])
+        && data.questions is list && data.questions.size() <= 100
+        && (data.questions.size() == 0 || data.questions[0] is map)
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidParticipation(data, participationId) {
+      return data.keys().hasAll(['id', 'timestamp', 'factory', 'registrationNumber', 'outcomeType', 'prizeId', 'prizeName'])
+        && data.keys().hasOnly(['id', 'timestamp', 'factory', 'registrationNumber', 'accentColor', 'outcomeType', 'prizeId', 'prizeName', 'tipText', 'quizCorrect', 'roundNumber'])
+        && data.id is string && data.id == participationId && isValidId(data.id)
+        && data.timestamp is number && data.timestamp > 0
+        && data.factory is string && data.factory.size() >= 1 && data.factory.size() <= 64
+        && data.registrationNumber is string && data.registrationNumber.size() >= 1 && data.registrationNumber.size() <= 64
+        && (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 32))
+        && data.outcomeType in ['prize', 'dica']
+        && data.prizeId is string && data.prizeId.size() <= 64
+        && data.prizeName is string && data.prizeName.size() >= 1 && data.prizeName.size() <= 128
+        && (!('tipText' in data) || (data.tipText is string && data.tipText.size() <= 400))
+        && (!('quizCorrect' in data) || data.quizCorrect is bool)
+        && (!('roundNumber' in data) || (data.roundNumber is number && data.roundNumber >= 1 && data.roundNumber <= 10000));
+    }
+
+    function isValidGameState(data) {
+      return data.keys().hasAll(['sceneIndex', 'hits', 'misses', 'found', 'roundHits', 'round', 'pendingReset', 'updatedAt'])
+        && data.keys().hasOnly(['sceneIndex', 'hits', 'misses', 'found', 'roundHits', 'round', 'pendingReset', 'updatedAt'])
+        && data.sceneIndex is number && data.sceneIndex >= 0 && data.sceneIndex <= 1000
+        && data.hits is number && data.hits >= 0 && data.hits <= 10000
+        && data.misses is number && data.misses >= 0 && data.misses <= 10000
+        && data.found is list && data.found.size() <= 500
+        && (data.found.size() == 0 || data.found[0] is string)
+        && data.roundHits is number && data.roundHits >= 0 && data.roundHits <= 100
+        && data.round is number && data.round >= 1 && data.round <= 10000
+        && data.pendingReset is bool
+        && data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    // Scenes collection (built-in + custom scenes with compressed image data)
+    match /scenes/{sceneId} {
+      allow get: if isValidId(sceneId);
+      allow list: if resource.data.order >= 0 && request.query.limit <= 100;
+      allow create: if isValidId(sceneId) && isValidScene(incoming(), sceneId);
+      allow update: if isValidId(sceneId)
+        && isValidScene(incoming(), sceneId)
+        && incoming().id == existing().id
+        && incoming().diff(existing()).affectedKeys().hasOnly(['order', 'name', 'imageUrl', 'thumbUrl', 'naturalWidth', 'naturalHeight', 'hideLegendPct', 'isBuiltin', 'points', 'updatedAt']);
+      allow delete: if isValidId(sceneId);
+    }
+
+    // Shared settings documents
+    match /settings/wheel_config {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isValidWheelConfig(incoming());
+      allow update: if isValidWheelConfig(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['factories', 'items', 'quizEnabled', 'allowDuplicateRegistration', 'version', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /settings/wheel_stock {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isValidFactoryStock(incoming());
+      allow update: if isValidFactoryStock(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['stocks', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /settings/quiz_bank {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isValidQuizBank(incoming());
+      allow update: if isValidQuizBank(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['questions', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Participations history collection
+    match /participations/{participationId} {
+      allow get: if isValidId(participationId);
+      allow list: if resource.data.timestamp > 0 && request.query.limit <= 2000;
+      allow create: if isValidId(participationId) && isValidParticipation(incoming(), participationId);
+      allow update: if false;
+      allow delete: if isValidId(participationId);
+    }
+
+    // Shared Gincana round state
+    match /game_state/{stateId} {
+      allow get: if stateId == 'active';
+      allow list: if false;
+      allow create: if stateId == 'active' && isValidGameState(incoming());
+      allow update: if stateId == 'active'
+        && isValidGameState(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['sceneIndex', 'hits', 'misses', 'found', 'roundHits', 'round', 'pendingReset', 'updatedAt']);
+      allow delete: if stateId == 'active';
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Gincana de Segurança da Informação",
+  "description": "Aplicação interativa de treinamento e conscientização em Segurança da Informação com identificação de riscos e classificação de dados em cenários reais.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

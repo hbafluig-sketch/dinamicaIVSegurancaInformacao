@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "Participation": {
+      "title": "Participation",
+      "description": "Record of a participant who spun the single prize roulette.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "number" },
+        "factory": { "type": "string", "maxLength": 64 },
+        "registrationNumber": { "type": "string", "maxLength": 64 },
+        "outcomeType": { "type": "string", "enum": ["prize", "dica"] },
+        "prizeId": { "type": "string", "maxLength": 64 },
+        "prizeName": { "type": "string", "maxLength": 128 },
+        "tipText": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["id", "timestamp", "factory", "registrationNumber", "outcomeType", "prizeName"]
+    },
+    "FactoryStock": {
+      "title": "FactoryStock",
+      "description": "Stock count of prizes and tip weight for all factories.",
+      "type": "object",
+      "properties": {
+        "stocks": { "type": "object" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["stocks"]
+    },
+    "WheelConfig": {
+      "title": "WheelConfig",
+      "description": "Global customizable roulette items including product images.",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["items"]
+    }
+  },
+  "firestore": {
+    "/participations/{participationId}": {
+      "schema": { "$ref": "#/entities/Participation" },
+      "description": "Collection of all participant records across factories."
+    },
+    "/settings/wheel_stock": {
+      "schema": { "$ref": "#/entities/FactoryStock" },
+      "description": "Shared real-time stock balances across all factories."
+    },
+    "/settings/wheel_config": {
+      "schema": { "$ref": "#/entities/WheelConfig" },
+      "description": "Shared real-time roulette item definitions and custom images."
+    }
+  }
+}

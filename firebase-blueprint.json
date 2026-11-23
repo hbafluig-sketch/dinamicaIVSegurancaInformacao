@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "Scene": {
+      "title": "Scene",
+      "description": "An interactive information-security image scenario with mapped regions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "order": { "type": "number" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "imageUrl": { "type": "string", "minLength": 1, "maxLength": 700000 },
+        "thumbUrl": { "type": "string", "maxLength": 120000 },
+        "naturalWidth": { "type": "number" },
+        "naturalHeight": { "type": "number" },
+        "hideLegendPct": { "type": "number" },
+        "isBuiltin": { "type": "boolean" },
+        "points": { "type": "array" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "order", "name", "imageUrl", "isBuiltin", "points", "updatedAt"]
+    },
+    "WheelConfig": {
+      "title": "WheelConfig",
+      "description": "Shared CyberRoleta configuration: factories, slices, prize image URLs, and policy flags.",
+      "type": "object",
+      "properties": {
+        "factories": { "type": "array" },
+        "items": { "type": "array" },
+        "quizEnabled": { "type": "boolean" },
+        "allowDuplicateRegistration": { "type": "boolean" },
+        "version": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["factories", "items", "quizEnabled", "allowDuplicateRegistration", "updatedAt"]
+    },
+    "FactoryStock": {
+      "title": "FactoryStock",
+      "description": "Shared real-time stock quantities per factory and roulette item.",
+      "type": "object",
+      "properties": {
+        "stocks": { "type": "object" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["stocks", "updatedAt"]
+    },
+    "QuizBank": {
+      "title": "QuizBank",
+      "description": "Cybersecurity quiz questions shown before spinning when enabled.",
+      "type": "object",
+      "properties": {
+        "questions": { "type": "array" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["questions", "updatedAt"]
+    },
+    "Participation": {
+      "title": "Participation",
+      "description": "Record of a participant spin on the CyberRoleta.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timestamp": { "type": "number" },
+        "factory": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "registrationNumber": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "accentColor": { "type": "string", "maxLength": 32 },
+        "outcomeType": { "type": "string", "enum": ["prize", "dica"] },
+        "prizeId": { "type": "string", "maxLength": 64 },
+        "prizeName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tipText": { "type": "string", "maxLength": 400 },
+        "quizCorrect": { "type": "boolean" },
+        "roundNumber": { "type": "number" }
+      },
+      "required": ["id", "timestamp", "factory", "registrationNumber", "outcomeType", "prizeId", "prizeName"]
+    },
+    "GameState": {
+      "title": "GameState",
+      "description": "Active Gincana round progress across kiosk sessions.",
+      "type": "object",
+      "properties": {
+        "sceneIndex": { "type": "number" },
+        "hits": { "type": "number" },
+        "misses": { "type": "number" },
+        "found": { "type": "array" },
+        "roundHits": { "type": "number" },
+        "round": { "type": "number" },
+        "pendingReset": { "type": "boolean" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["sceneIndex", "hits", "misses", "found", "roundHits", "round", "pendingReset", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/scenes/{sceneId}": {
+      "schema": { "$ref": "#/entities/Scene" },
+      "description": "Persisted Gincana scenes including built-in and uploaded custom scenes."
+    },
+    "/settings/wheel_config": {
+      "schema": { "$ref": "#/entities/WheelConfig" },
+      "description": "Shared roulette configuration, items, prize images, and policy flags."
+    },
+    "/settings/wheel_stock": {
+      "schema": { "$ref": "#/entities/FactoryStock" },
+      "description": "Shared real-time stock quantities by factory."
+    },
+    "/settings/quiz_bank": {
+      "schema": { "$ref": "#/entities/QuizBank" },
+      "description": "Shared cybersecurity quiz question bank."
+    },
+    "/participations/{participationId}": {
+      "schema": { "$ref": "#/entities/Participation" },
+      "description": "Immutable history of roulette spins across factories."
+    },
+    "/game_state/{stateId}": {
+      "schema": { "$ref": "#/entities/GameState" },
+      "description": "Active shared Gincana round state."
+    }
+  }
+}

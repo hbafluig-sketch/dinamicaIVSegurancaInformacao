@@ -1,0 +1,6 @@
+{
+  "name": "Roleta de Prêmios e Quiz de Cibersegurança",
+  "description": "Sistema interativo para eventos com identificação por registro, seleção de cores, quiz educativo de cibersegurança e roletas dinâmicas de brindes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

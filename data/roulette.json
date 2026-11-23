@@ -1,0 +1,181 @@
+{
+  "version": 2,
+  "settings": {
+    "factories": [
+      "Fábrica 1",
+      "Fábrica 2",
+      "Fábrica 4",
+      "Casa Branca",
+      "Extrema"
+    ],
+    "items": [
+      {
+        "id": "camiseta",
+        "label": "Camiseta",
+        "color": "#dc2626",
+        "textColor": "#ffffff",
+        "outcomeType": "prize",
+        "imageUrl": "/assets/roulette/prize_camiseta.jpg",
+        "weight": 1
+      },
+      {
+        "id": "garrafa_termica",
+        "label": "Garrafa Térmica",
+        "color": "#059669",
+        "textColor": "#ffffff",
+        "outcomeType": "prize",
+        "imageUrl": "/assets/roulette/prize_garrafa_termica.jpg",
+        "weight": 1
+      },
+      {
+        "id": "fone_power_bank",
+        "label": "Fone de Ouvido Power Bank",
+        "color": "#7c3aed",
+        "textColor": "#ffffff",
+        "outcomeType": "prize",
+        "imageUrl": "/assets/roulette/prize_fone_power_bank.jpg",
+        "weight": 1
+      },
+      {
+        "id": "carregador_usb",
+        "label": "Carregador USB Multiuso",
+        "color": "#2563eb",
+        "textColor": "#ffffff",
+        "outcomeType": "prize",
+        "imageUrl": "/assets/roulette/prize_carregador_usb.jpg",
+        "weight": 1
+      },
+      {
+        "id": "descanso_copo",
+        "label": "Descanso de Copo",
+        "color": "#db2777",
+        "textColor": "#ffffff",
+        "outcomeType": "prize",
+        "imageUrl": "/assets/roulette/prize_descanso_copo.jpg",
+        "weight": 1
+      },
+      {
+        "id": "dica",
+        "label": "Dica",
+        "color": "#d97706",
+        "textColor": "#ffffff",
+        "outcomeType": "dica",
+        "weight": 1
+      }
+    ],
+    "stocks": {
+      "Fábrica 1": {
+        "camiseta": 15,
+        "garrafa_termica": 12,
+        "fone_power_bank": 6,
+        "carregador_usb": 10,
+        "descanso_copo": 25,
+        "dica": 15
+      },
+      "Fábrica 2": {
+        "camiseta": 15,
+        "garrafa_termica": 12,
+        "fone_power_bank": 6,
+        "carregador_usb": 10,
+        "descanso_copo": 25,
+        "dica": 15
+      },
+      "Fábrica 4": {
+        "camiseta": 15,
+        "garrafa_termica": 12,
+        "fone_power_bank": 6,
+        "carregador_usb": 10,
+        "descanso_copo": 25,
+        "dica": 15
+      },
+      "Casa Branca": {
+        "camiseta": 15,
+        "garrafa_termica": 12,
+        "fone_power_bank": 6,
+        "carregador_usb": 10,
+        "descanso_copo": 25,
+        "dica": 15
+      },
+      "Extrema": {
+        "camiseta": 15,
+        "garrafa_termica": 12,
+        "fone_power_bank": 6,
+        "carregador_usb": 10,
+        "descanso_copo": 25,
+        "dica": 15
+      }
+    },
+    "quizEnabled": false,
+    "allowDuplicateRegistration": false,
+    "updatedAt": "2026-11-23T15:45:09.162Z"
+  },
+  "participations": [],
+  "quizQuestions": [
+    {
+      "id": "q-1",
+      "question": "Você precisa sair da mesa por dois minutos para buscar um documento na impressora. Qual a atitude correta?",
+      "options": [
+        "Deixar o computador aberto porque é rápido",
+        "Bloquear a tela imediatamente (Win + L)",
+        "Apenas desligar o monitor"
+      ],
+      "correctIndex": 1,
+      "explanation": "Bloquear a sessão (Win + L) impede que qualquer pessoa acesse seu usuário e sistemas enquanto você estiver ausente."
+    },
+    {
+      "id": "q-2",
+      "question": "Você encontra um pendrive sem identificação próximo à recepção. O que fazer?",
+      "options": [
+        "Conectar no seu computador para descobrir de quem é",
+        "Entregar para a equipe de TI/Segurança sem conectá-lo",
+        "Guardar na gaveta para uso pessoal"
+      ],
+      "correctIndex": 1,
+      "explanation": "Pendrives desconhecidos podem conter malware ou executar comandos maliciosos automaticamente ao serem conectados."
+    },
+    {
+      "id": "q-3",
+      "question": "Um e-mail supostamente do suporte pede sua senha com urgência para evitar bloqueio da conta. Como agir?",
+      "options": [
+        "Responder com a senha para não perder o acesso",
+        "Clicar no link e preencher o formulário rápido",
+        "Não informar a senha e reportar como tentativa de phishing à TI"
+      ],
+      "correctIndex": 2,
+      "explanation": "A equipe de TI nunca solicita sua senha por e-mail, telefone ou link externo. Trata-se de phishing."
+    },
+    {
+      "id": "q-4",
+      "question": "Qual destas informações deve ser classificada como CONFIDENCIAL?",
+      "options": [
+        "Cartaz institucional de valores da empresa",
+        "Desenho técnico de produto e planejamento de lote",
+        "Placa de sinalização de segurança do trabalho"
+      ],
+      "correctIndex": 1,
+      "explanation": "Desenhos técnicos e planejamentos produtivos contêm propriedade intelectual e dados estratégicos restritos."
+    },
+    {
+      "id": "q-5",
+      "question": "Qual é a prática recomendada para proteger documentos impressos classificados como internos ou confidenciais?",
+      "options": [
+        "Deixar sobre a mesa ao final do expediente",
+        "Retirar imediatamente da impressora e guardar em local seguro (Mesa Limpa)",
+        "Usar como rascunho em áreas comuns"
+      ],
+      "correctIndex": 1,
+      "explanation": "A Política de Mesa Limpa evita vazamentos físicos acidentais de dados sensíveis e documentos impressos."
+    },
+    {
+      "id": "q-6",
+      "question": "Por que a Autenticação Multifator (MFA) é tão importante?",
+      "options": [
+        "Porque substitui a necessidade de ter uma boa senha",
+        "Porque exige uma segunda verificação além da senha, bloqueando acessos indevidos",
+        "Porque deixa o computador mais rápido"
+      ],
+      "correctIndex": 1,
+      "explanation": "Mesmo que alguém descubra sua senha, o segundo fator impede o invasor de concluir o login."
+    }
+  ]
+}
