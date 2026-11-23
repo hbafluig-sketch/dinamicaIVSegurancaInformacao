@@ -479,7 +479,7 @@ export function RouletteAdminPanel({
                 Estoque, Brindes & Cores da Roleta
               </h2>
               <p className="text-sm text-slate-600">
-                As chances na roleta seguem a quantidade em estoque (oculto na tela dos participantes). Itens com estoque 0 saem da roleta automaticamente.
+                As chances na roleta seguem a quantidade em estoque (oculto na tela dos participantes). Itens com estoque 0 continuam visíveis na roleta, mas nunca são sorteados.
               </p>
             </div>
 

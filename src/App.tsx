@@ -382,7 +382,13 @@ export default function App() {
   }, [handleFinishGame, handleResumeGame, handleStartNewGame, savedGame, view]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div
+      className={
+        view === 'game'
+          ? 'h-dvh overflow-hidden flex flex-col bg-slate-50 text-slate-900'
+          : 'min-h-screen flex flex-col bg-slate-50 text-slate-900'
+      }
+    >
       <TopBar
         view={view}
         hasSavedGame={Boolean(savedGame)}
@@ -394,7 +400,7 @@ export default function App() {
       <main
         className={
           view === 'game'
-            ? 'flex-1 w-full max-w-none mx-auto px-3 sm:px-5 py-2.5 flex flex-col min-h-0'
+            ? 'flex-1 w-full max-w-none mx-auto px-2.5 sm:px-4 py-2 flex flex-col min-h-0 overflow-hidden'
             : 'flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8'
         }
       >

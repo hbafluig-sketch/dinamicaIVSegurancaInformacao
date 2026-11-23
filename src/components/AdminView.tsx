@@ -628,7 +628,7 @@ export function AdminView({
           {/* Editor Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_360px] gap-6 items-start">
             <div className="space-y-3">
-              <div className="w-full h-[70dvh] min-h-[440px]">
+              <div className="w-full h-[68dvh] max-h-[calc(100dvh-140px)] min-h-[340px]">
                 <SceneStageFrame
                   imageUrl={currentScene.imageUrl}
                   alt={currentScene.name}
@@ -636,6 +636,7 @@ export function AdminView({
                   naturalHeight={currentScene.naturalHeight}
                   applyCrop={false}
                   fillStage={true}
+                  uniformAspect={0.72}
                   innerRef={stageRef}
                   onPointerDown={handlePointerDownStage}
                   onPointerMove={handlePointerMoveStage}

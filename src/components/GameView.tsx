@@ -65,6 +65,7 @@ export function GameView({
   const [advancingScene, setAdvancingScene] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSidebarInFullscreen, setShowSidebarInFullscreen] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -316,15 +317,15 @@ export function GameView({
       className={
         isFullscreen
           ? 'fixed inset-0 z-40 bg-slate-950 text-white flex flex-col overflow-hidden'
-          : 'flex-1 flex flex-col gap-3 min-h-0 lg:h-[calc(100dvh-84px)]'
+          : 'flex-1 min-h-0 flex flex-col gap-2 overflow-hidden'
       }
     >
       {/* Top HUD Bar */}
       <div
         className={
           isFullscreen
-            ? 'shrink-0 bg-slate-900/95 border-b border-slate-800 px-3 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-3'
-            : 'shrink-0 bg-white rounded-xl border border-slate-200 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3'
+            ? 'shrink-0 bg-slate-900/95 border-b border-slate-800 px-3 sm:px-5 py-2 flex flex-wrap items-center justify-between gap-2'
+            : 'shrink-0 bg-white rounded-xl border border-slate-200 px-3 sm:px-4 py-1.5 flex flex-wrap items-center justify-between gap-2'
         }
       >
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs sm:text-sm">
@@ -416,6 +417,21 @@ export function GameView({
             </>
           )}
 
+          {!isFullscreen && (
+            <button
+              type="button"
+              onClick={() => setShowMobileSidebar((v) => !v)}
+              className="lg:hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer"
+            >
+              {showMobileSidebar ? (
+                <PanelRightClose className="w-3.5 h-3.5" />
+              ) : (
+                <PanelRightOpen className="w-3.5 h-3.5" />
+              )}
+              <span>Painel ({foundInCurrentScene.length}/{scene.points.length})</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onToggleMute}
@@ -459,15 +475,15 @@ export function GameView({
         className={
           isFullscreen
             ? 'flex-1 min-h-0 flex relative overflow-hidden'
-            : 'flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4'
+            : 'flex-1 min-h-0 relative grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] gap-3 overflow-hidden'
         }
       >
         {/* Interactive Scene Stage */}
         <div
           className={
             isFullscreen
-              ? 'flex-1 min-w-0 min-h-0 flex flex-col p-2 sm:p-3 gap-2'
-              : 'min-h-0 bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 flex flex-col gap-3'
+              ? 'flex-1 min-w-0 min-h-0 flex flex-col p-2 sm:p-3 gap-2 overflow-hidden'
+              : 'min-w-0 min-h-0 bg-white rounded-2xl border border-slate-200 p-2.5 sm:p-3 flex flex-col gap-2 overflow-hidden'
           }
         >
           {!isFullscreen && (
@@ -511,14 +527,8 @@ export function GameView({
             </div>
           )}
 
-          {/* Uniform Auto-Sized Fullscreen Stage Container */}
-          <div
-            className={
-              isFullscreen
-                ? 'flex-1 min-h-0 w-full'
-                : 'h-[64dvh] min-h-[380px] lg:h-auto lg:flex-1 lg:min-h-0 w-full'
-            }
-          >
+          {/* Uniform Auto-Sized Viewport-Fitted Stage Container */}
+          <div className="flex-1 min-h-0 w-full">
             <SceneStageFrame
               imageUrl={scene.imageUrl}
               alt={scene.name}
@@ -527,6 +537,7 @@ export function GameView({
               hideLegendPct={scene.hideLegendPct}
               applyCrop={true}
               fillStage={true}
+              uniformAspect={0.78}
               innerRef={stageRef}
               onStageClick={handleStageMiss}
               className="cursor-crosshair"
@@ -546,10 +557,10 @@ export function GameView({
                       width: `${point.w}%`,
                       height: `${point.h}%`,
                     }}
-                    className={`absolute rounded-lg transition-all duration-150 cursor-pointer focus:outline-none ${
+                    className={`absolute rounded-lg transition-all duration-150 cursor-crosshair focus:outline-none ${
                       isFound
                         ? `${meta.regionBg} border-2 ${meta.regionBorder}`
-                        : 'bg-transparent border-0 hover:bg-white/5'
+                        : 'bg-transparent border-0'
                     }`}
                   >
                     {isFound && (
@@ -603,7 +614,14 @@ export function GameView({
 
         {/* Normal Desktop Sidebar */}
         {!isFullscreen && (
-          <aside className="bg-white rounded-2xl border border-slate-200 p-4 overflow-y-auto min-h-0">
+          <aside className="hidden lg:block bg-white rounded-2xl border border-slate-200 p-4 overflow-y-auto min-h-0">
+            {sidebarContent}
+          </aside>
+        )}
+
+        {/* Mobile / Tablet Collapsible Drawer Sidebar */}
+        {!isFullscreen && showMobileSidebar && (
+          <aside className="lg:hidden absolute inset-y-0 right-0 z-30 w-80 max-w-[85vw] bg-white text-slate-900 rounded-l-2xl border border-slate-200 p-4 overflow-y-auto shadow-2xl">
             {sidebarContent}
           </aside>
         )}

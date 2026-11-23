@@ -246,16 +246,14 @@ export function RouletteView({
 
   const factoryStock = settings.stocks[factory] || {};
 
-  // Weighted slices: stock > 0 for prizes, or configured stock/weight for dicas
+  // Weighted slices: keep all configured items visible on the wheel; items with stock 0 get weight 0 so they cannot be drawn
   const weightedItems: WeightedSlice[] = useMemo(
     () =>
-      settings.items
-        .map((item) => {
-          const stockQty = Math.max(0, Number(factoryStock[item.id] ?? 0));
-          const weight = stockQty > 0 ? stockQty * Math.max(1, Number(item.weight || 1)) : 0;
-          return { item, weight };
-        })
-        .filter((entry) => entry.weight > 0),
+      settings.items.map((item) => {
+        const stockQty = Math.max(0, Number(factoryStock[item.id] ?? 0));
+        const weight = stockQty > 0 ? stockQty * Math.max(1, Number(item.weight || 1)) : 0;
+        return { item, weight };
+      }),
     [factoryStock, settings.items],
   );
 
@@ -913,11 +911,13 @@ export function RouletteView({
                     </button>
 
                     <p className="text-xs text-slate-400">
-                      {spinning
-                        ? 'Aguarde o sorteio...'
-                        : spinFinished
-                          ? 'Carregando resultado...'
-                          : 'Clique para girar a roleta'}
+                      {totalWeight <= 0
+                        ? 'Todos os itens estão com estoque zerado nesta fábrica. Ajuste no painel Administrador.'
+                        : spinning
+                          ? 'Aguarde o sorteio...'
+                          : spinFinished
+                            ? 'Carregando resultado...'
+                            : 'Clique para girar a roleta'}
                     </p>
                   </div>
                 </div>

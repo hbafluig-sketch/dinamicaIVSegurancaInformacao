@@ -9,6 +9,7 @@ interface SceneStageFrameProps {
   hideLegendPct?: number;
   applyCrop?: boolean;
   fillStage?: boolean;
+  uniformAspect?: number;
   className?: string;
   innerRef?: React.Ref<HTMLDivElement>;
   onPointerDown?: React.PointerEventHandler<HTMLDivElement>;
@@ -26,6 +27,7 @@ export function SceneStageFrame({
   hideLegendPct = 0,
   applyCrop = false,
   fillStage = false,
+  uniformAspect,
   className = '',
   innerRef,
   onPointerDown,
@@ -72,7 +74,11 @@ export function SceneStageFrame({
     let viewportW = 0;
     let viewportH = 0;
     if (outerSize.w > 0 && outerSize.h > 0 && activeDims) {
-      const visibleRatio = activeDims.w / (activeDims.h * visibleFrac);
+      const naturalVisibleRatio = activeDims.w / (activeDims.h * visibleFrac);
+      const visibleRatio =
+        uniformAspect && uniformAspect > 0 && naturalVisibleRatio <= 1.25
+          ? uniformAspect
+          : naturalVisibleRatio;
       const boxRatio = outerSize.w / outerSize.h;
       if (boxRatio > visibleRatio) {
         viewportH = outerSize.h;
