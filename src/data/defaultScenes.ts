@@ -1,10 +1,11 @@
 import type { Scene } from '../types/gincana.ts';
+import { resolveAssetUrl } from '../utils/assetUrl.ts';
 
 export const ROULETTE_URL = 'https://roleta-de-pr-mios-e-quiz-de-ciberseguran-a.ai.studio/';
 export const ROUND_TARGET = 3;
 export const PASSING_THRESHOLD = 80;
 
-export const DEFAULT_SCENES: Scene[] = [
+const RAW_DEFAULT_SCENES: Scene[] = [
   {
     id: 'builtin-teste-1',
     name: 'Produção — Linha 3',
@@ -676,3 +677,9 @@ export const DEFAULT_SCENES: Scene[] = [
     ],
   },
 ];
+
+export const DEFAULT_SCENES: Scene[] = RAW_DEFAULT_SCENES.map((scene) => ({
+  ...scene,
+  imageUrl: resolveAssetUrl(scene.imageUrl),
+  thumbUrl: scene.thumbUrl ? resolveAssetUrl(scene.thumbUrl) : undefined,
+}));

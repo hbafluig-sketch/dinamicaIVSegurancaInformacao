@@ -28,7 +28,6 @@ import type {
   WheelItem,
 } from '../types/gincana.ts';
 import { playTone } from '../utils/sound.ts';
-import { GoogleSignInButton } from './GoogleSignInButton.tsx';
 
 const ACTIVE_FACTORY_KEY = 'cyber_roleta_active_factory_v5';
 
@@ -50,9 +49,6 @@ interface RouletteViewProps {
   remainingRegions?: number;
   pendingReset?: boolean;
   muted: boolean;
-  needsGoogleAuth?: boolean;
-  isGoogleSigningIn?: boolean;
-  onGoogleSignIn?: () => Promise<void>;
   onSpinComplete: (
     payload: Omit<Participation, 'id' | 'timestamp'>,
   ) => Promise<{ ok: boolean; error?: string; record?: Participation }>;
@@ -210,9 +206,6 @@ export function RouletteView({
   remainingRegions = 0,
   pendingReset = false,
   muted,
-  needsGoogleAuth = false,
-  isGoogleSigningIn = false,
-  onGoogleSignIn,
   onSpinComplete,
   onFinishRoundNextPlayer,
   onBackToGame,
@@ -643,19 +636,6 @@ export function RouletteView({
 
   return (
     <div className="flex-1 w-full min-h-0 flex flex-col items-center justify-center gap-2 sm:gap-3 overflow-hidden">
-      {needsGoogleAuth && onGoogleSignIn && step === 'REGISTRATION' && (
-        <section className="w-full max-w-5xl shrink-0 rounded-xl border border-amber-200 bg-amber-50/90 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-amber-950">
-            Conecte sua conta Google para salvar os próximos giros automaticamente no Google Sheets.
-          </p>
-          <GoogleSignInButton
-            onClick={() => void onGoogleSignIn()}
-            disabled={isGoogleSigningIn}
-            label={isGoogleSigningIn ? 'Conectando...' : 'Sign in with Google'}
-          />
-        </section>
-      )}
-
       {roundMode && (
         <section className="w-full max-w-5xl shrink-0 rounded-xl border border-emerald-200 bg-emerald-50/80 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 min-w-0">

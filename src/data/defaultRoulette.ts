@@ -1,4 +1,5 @@
 import type { QuizQuestion, RouletteData, RouletteSettings, WheelItem } from '../types/gincana.ts';
+import { resolveAssetUrl } from '../utils/assetUrl.ts';
 
 export const DEFAULT_FACTORIES: string[] = [
   'Fábrica 1',
@@ -9,11 +10,11 @@ export const DEFAULT_FACTORIES: string[] = [
 ];
 
 export const DEFAULT_PRIZE_IMAGES: Record<string, string> = {
-  camiseta: '/assets/aistudio/camiseta_ae6cf0be.png',
-  garrafa_termica: '/assets/aistudio/Garrafa_ea73a656.png',
-  fone_power_bank: '/assets/aistudio/fone_c3cb11ac.png',
-  carregador_usb: '/assets/aistudio/cabo_f200b078.png',
-  descanso_copo: '/assets/aistudio/descanso_de_copo_a55ba344.png',
+  camiseta: resolveAssetUrl('/assets/aistudio/camiseta_ae6cf0be.png'),
+  garrafa_termica: resolveAssetUrl('/assets/aistudio/Garrafa_ea73a656.png'),
+  fone_power_bank: resolveAssetUrl('/assets/aistudio/fone_c3cb11ac.png'),
+  carregador_usb: resolveAssetUrl('/assets/aistudio/cabo_f200b078.png'),
+  descanso_copo: resolveAssetUrl('/assets/aistudio/descanso_de_copo_a55ba344.png'),
 };
 
 export const BADGE_COLORS: Array<{ id: string; label: string; hex: string }> = [
