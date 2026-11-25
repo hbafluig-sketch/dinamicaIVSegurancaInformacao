@@ -11,9 +11,14 @@ import type {
 import { resolveAssetUrl } from './assetUrl.ts';
 
 export const APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbyNsufsDgHxVfyj-yDBoea5OONbw6-FfYCxRm8Aw46uWEqRZsGHHZzY8E9p0XVmIszo/exec';
+  'https://script.google.com/macros/s/AKfycbynWbFB3-Yq1xgy-FCJq-SAozijNUc6kEYumRFWI-DPHRIItO1dHkxZOp6KDsusBsBPkg/exec';
 
-export type AppsScriptSyncType = 'historico' | 'estoque' | 'quiz' | 'cenarios';
+export type AppsScriptSyncType =
+  | 'participacoes'
+  | 'historico'
+  | 'estoque'
+  | 'quiz'
+  | 'cenarios';
 
 export interface AppsScriptLoadResult {
   rouletteData: RouletteData;
@@ -113,6 +118,39 @@ function parseParticipationEntry(raw: unknown, idx: number): Participation | nul
   return record;
 }
 
+function parseHeaderlessParticipationRow(obj: Record<string, unknown>, idx: number): Participation | null {
+  const entries = Object.entries(obj);
+  const idEntry = entries.find(([, v]) => typeof v === 'string' && /^part-\d+/.test(v));
+  if (!idEntry) return null;
+
+  const values = entries.map(([, v]) => v);
+  const idIdx = entries.indexOf(idEntry);
+  const id = String(idEntry[1]);
+  const tsVal = Number(values[idIdx + 1]);
+  const timestamp = Number.isFinite(tsVal) && tsVal > 1_000_000_000_000 ? tsVal : Date.now() - idx;
+  const factory = String(values[idIdx + 2] ?? '').trim();
+  const registrationNumber = String(values[idIdx + 3] ?? '').trim();
+  const prizeId = String(values[idIdx + 4] ?? '').trim();
+  const prizeName = String(values[idIdx + 5] ?? '').trim();
+  if (!factory || !registrationNumber || !prizeName) return null;
+
+  const outcomeType: 'prize' | 'dica' =
+    prizeId === 'dica' || prizeName.toLowerCase() === 'dica' ? 'dica' : 'prize';
+
+  const record: Participation = {
+    id,
+    timestamp,
+    factory,
+    registrationNumber,
+    outcomeType,
+    prizeId: prizeId || (outcomeType === 'dica' ? 'dica' : 'prize'),
+    prizeName,
+  };
+  const colorVal = values.find((v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v));
+  if (typeof colorVal === 'string') record.accentColor = colorVal;
+  return record;
+}
+
 function parseSettingsAndStock(
   rawEstoque: unknown,
   fallbackSettings: RouletteSettings,
@@ -122,10 +160,14 @@ function parseSettingsAndStock(
 
   const defaults = createDefaultRouletteData().settings;
 
-  // Array of stock rows: [[unidade, itemId, itemLabel, qty], ...] or [{ unidade, itemId, estoque }]
+  // Array of stock rows: [[unidade, itemId, itemLabel, qty], ...] or [{ unidade, itemId, estoque, ... }]
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) return { settings: fallbackSettings, found: false };
     const stocks: Record<string, Record<string, number>> = {};
+    let parsedQuizEnabled: boolean | undefined;
+    let parsedAllowDuplicate: boolean | undefined;
+    const itemOverrides = new Map<string, Partial<WheelItem>>();
+
     for (const row of parsed) {
       if (Array.isArray(row)) {
         const factory = String(row[0] ?? '').trim();
@@ -145,6 +187,31 @@ function parseSettingsAndStock(
         );
         if (!stocks[factory]) stocks[factory] = {};
         stocks[factory][itemId] = qty;
+
+        const label = String(obj.item ?? obj.Item ?? obj.label ?? '').trim();
+        const color = String(obj.color ?? obj.cor ?? '').trim();
+        const outcomeRaw = String(obj.outcomeType ?? obj.tipo ?? '').trim().toLowerCase();
+        const weightNum = Number(obj.weight ?? obj.peso);
+        const imageUrl = String(obj.imageUrl ?? obj.imagemUrl ?? '').trim();
+        const existing = itemOverrides.get(itemId) ?? {};
+        if (label) existing.label = label;
+        if (color) existing.color = color;
+        if (outcomeRaw === 'dica' || outcomeRaw === 'prize') existing.outcomeType = outcomeRaw;
+        if (Number.isFinite(weightNum) && weightNum >= 1) existing.weight = Math.floor(weightNum);
+        if (imageUrl) existing.imageUrl = resolveAssetUrl(imageUrl);
+        itemOverrides.set(itemId, existing);
+
+        const qe = obj.quizEnabled;
+        if (typeof qe === 'boolean') parsedQuizEnabled = qe;
+        else if (typeof qe === 'string' && qe.trim()) {
+          parsedQuizEnabled = /^(sim|true|1)$/i.test(qe.trim());
+        }
+
+        const ad = obj.allowDuplicateRegistration;
+        if (typeof ad === 'boolean') parsedAllowDuplicate = ad;
+        else if (typeof ad === 'string' && ad.trim()) {
+          parsedAllowDuplicate = /^(sim|true|1)$/i.test(ad.trim());
+        }
       }
     }
     const foundFactories = Object.keys(stocks);
@@ -156,12 +223,34 @@ function parseSettingsAndStock(
     for (const [fac, map] of Object.entries(stocks)) {
       mergedStocks[fac] = { ...(mergedStocks[fac] ?? {}), ...map };
     }
+    const mergedItems = fallbackSettings.items.map((it) => {
+      const patch = itemOverrides.get(it.id);
+      return patch ? { ...it, ...patch } : it;
+    });
+    for (const [itemId, patch] of itemOverrides.entries()) {
+      if (!mergedItems.some((it) => it.id === itemId) && patch.label) {
+        mergedItems.push({
+          id: itemId,
+          label: patch.label,
+          color: patch.color || '#0284c7',
+          textColor: '#ffffff',
+          outcomeType: patch.outcomeType || 'prize',
+          weight: patch.weight || 1,
+          imageUrl: patch.imageUrl || undefined,
+        });
+      }
+    }
+
     return {
       found: true,
       settings: {
         ...fallbackSettings,
         factories: Array.from(new Set([...fallbackSettings.factories, ...foundFactories])),
+        items: mergedItems,
         stocks: mergedStocks,
+        quizEnabled: parsedQuizEnabled ?? fallbackSettings.quizEnabled,
+        allowDuplicateRegistration:
+          parsedAllowDuplicate ?? fallbackSettings.allowDuplicateRegistration,
       },
     };
   }
@@ -381,47 +470,139 @@ function parseSceneList(rawScenes: unknown, fallbackScenes: Scene[]): Scene[] | 
   return result.length > 0 ? result : null;
 }
 
+function formatDateTimePtBr(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+export function serializeEstoqueForAppsScript(settings: RouletteSettings) {
+  const rows: Array<Record<string, unknown>> = [];
+  for (const factory of settings.factories) {
+    const factoryStocks = settings.stocks[factory] ?? {};
+    for (const item of settings.items) {
+      rows.push({
+        unidade: factory,
+        itemId: item.id,
+        item: item.label,
+        estoque: factoryStocks[item.id] ?? 0,
+        outcomeType: item.outcomeType,
+        color: item.color,
+        weight: item.weight,
+        imageUrl: item.imageUrl ?? '',
+        quizEnabled: settings.quizEnabled ? 'SIM' : 'NAO',
+        allowDuplicateRegistration: settings.allowDuplicateRegistration ? 'SIM' : 'NAO',
+      });
+    }
+  }
+  return rows;
+}
+
+export function serializeQuizForAppsScript(quizQuestions: QuizQuestion[]) {
+  return quizQuestions.map((q) => ({
+    id: q.id,
+    question: q.question,
+    options: JSON.stringify(q.options),
+    correctIndex: q.correctIndex,
+    explanation: q.explanation,
+  }));
+}
+
+export function serializeCenariosForAppsScript(scenes: Scene[]) {
+  return scenes.map((s) => ({
+    id: s.id,
+    name: s.name,
+    imageUrl: s.imageUrl,
+    thumbUrl: s.thumbUrl && s.thumbUrl !== s.imageUrl ? s.thumbUrl : '',
+    naturalWidth: s.naturalWidth ?? '',
+    naturalHeight: s.naturalHeight ?? '',
+    hideLegendPct: s.hideLegendPct ?? 0,
+    isBuiltin: Boolean(s.isBuiltin),
+    points: JSON.stringify(s.points),
+  }));
+}
+
+export function serializeParticipationForAppsScript(record: Participation) {
+  return {
+    ID: record.id,
+    'Data/Hora': formatDateTimePtBr(record.timestamp),
+    Timestamp: record.timestamp,
+    Unidade: record.factory,
+    'Matrícula': record.registrationNumber,
+    Tipo: record.outcomeType === 'dica' ? 'Dica' : 'Brinde',
+    'Prize ID': record.prizeId,
+    Resultado: record.prizeName,
+    Dica: record.tipText ?? '',
+    'Quiz Correto': typeof record.quizCorrect === 'boolean' ? record.quizCorrect : '',
+    Rodada: typeof record.roundNumber === 'number' ? record.roundNumber : '',
+    Cor: record.accentColor ?? '',
+  };
+}
+
 export async function postToAppsScript(
   tipo: AppsScriptSyncType,
   dados: unknown,
-): Promise<unknown> {
-  let res: Response;
-  try {
-    res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain',
-      },
-      body: JSON.stringify({ tipo, dados }),
-    });
-  } catch {
-    throw new Error(
-      `Falha de rede/CORS ao enviar "${tipo}" para o Apps Script. Confirme se a implantação está publicada com "Quem pode acessar: Qualquer pessoa".`,
-    );
-  }
+): Promise<Record<string, unknown>> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? window.setTimeout(() => controller.abort(), 30000) : null;
 
-  if (!res.ok) {
-    throw new Error(`Falha HTTP ${res.status} ao enviar "${tipo}" para o Google Apps Script.`);
-  }
-
-  const text = await res.text();
-  if (!text) return { ok: true };
-  if (text.trim().startsWith('<')) {
-    throw new Error(
-      'O Apps Script retornou HTML/login em vez de JSON. Publique a implantação com "Quem pode acessar: Qualquer pessoa".',
-    );
-  }
   try {
-    const json = JSON.parse(text) as { ok?: boolean; error?: string; status?: string };
-    if (json && json.ok === false && json.error) {
-      throw new Error(json.error);
+    console.log('[AppsScript POST] Enviando:', { tipo, dados });
+    let response: Response;
+    try {
+      response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        redirect: 'follow',
+        credentials: 'omit',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify({ tipo, dados }),
+        signal: controller?.signal,
+      });
+    } catch (err) {
+      const msg =
+        err instanceof DOMException && err.name === 'AbortError'
+          ? `Tempo limite excedido ao enviar "${tipo}" para o Apps Script.`
+          : err instanceof Error
+            ? `Erro no fetch ao enviar "${tipo}": ${err.message}`
+            : `Falha de rede ao enviar "${tipo}" para o Apps Script.`;
+      console.log('[AppsScript POST] Falha no fetch:', tipo, err);
+      throw new Error(msg);
     }
+
+    const text = await response.text();
+    console.log('[AppsScript POST] Resposta bruta:', tipo, response.status, text);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ao enviar "${tipo}": ${text || 'sem corpo'}`);
+    }
+
+    if (!text) {
+      return { status: 'ok' };
+    }
+
+    let json: Record<string, unknown>;
+    try {
+      json = JSON.parse(text) as Record<string, unknown>;
+    } catch (parseErr) {
+      console.log('[AppsScript POST] Resposta não é JSON válido:', tipo, parseErr, text);
+      throw new Error(`Resposta inválida do Apps Script ao enviar "${tipo}": ${text.slice(0, 180)}`);
+    }
+
+    console.log('[AppsScript POST] JSON parseado:', tipo, json);
+
+    const statusLower = typeof json.status === 'string' ? json.status.trim().toLowerCase() : '';
+    if (json.ok === false || statusLower === 'erro' || statusLower === 'error') {
+      const errMsg = String(
+        json.mensagem ?? json.message ?? json.error ?? `Erro retornado pelo Apps Script em "${tipo}".`,
+      );
+      throw new Error(errMsg);
+    }
+
     return json;
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      return { ok: true, raw: text };
-    }
-    throw err;
+  } finally {
+    if (timeoutId !== null) window.clearTimeout(timeoutId);
   }
 }
 
@@ -437,6 +618,8 @@ export async function fetchFromAppsScript(
     try {
       res = await fetch(APPS_SCRIPT_URL, {
         method: 'GET',
+        credentials: 'omit',
+        redirect: 'follow',
         signal: controller?.signal,
       });
     } catch (err) {
@@ -466,7 +649,8 @@ export async function fetchFromAppsScript(
         ? (envelopeCandidate as Record<string, unknown>)
         : rawBody;
 
-    const rawHistorico = tryParseJson(root.historico ?? root.participations);
+    const rawParticipacoes = tryParseJson(root.participacoes);
+    const rawHistorico = tryParseJson(root.historico);
     const rawEstoque = root.estoque ?? root.settings ?? root.stocks;
     const rawQuiz = root.quiz ?? root.quizQuestions;
     const rawCenarios = root.cenarios ?? root.scenes;
@@ -474,11 +658,26 @@ export async function fetchFromAppsScript(
     let hasRemoteData = false;
 
     let participations = fallbackRoulette.participations;
-    if (Array.isArray(rawHistorico)) {
-      const parsedParts = rawHistorico
-        .map((row, idx) => parseParticipationEntry(row, idx))
-        .filter((p): p is Participation => Boolean(p))
-        .sort((a, b) => b.timestamp - a.timestamp);
+    const combinedRawParts: unknown[] = [];
+    if (Array.isArray(rawParticipacoes)) combinedRawParts.push(...rawParticipacoes);
+    if (Array.isArray(rawHistorico)) combinedRawParts.push(...rawHistorico);
+
+    if (Array.isArray(rawParticipacoes) || Array.isArray(rawHistorico)) {
+      const seenIds = new Set<string>();
+      const parsedParts: Participation[] = [];
+      combinedRawParts.forEach((row, idx) => {
+        const direct = parseParticipationEntry(row, idx);
+        const parsed =
+          direct ??
+          (row && typeof row === 'object' && !Array.isArray(row)
+            ? parseHeaderlessParticipationRow(row as Record<string, unknown>, idx)
+            : null);
+        if (parsed && !seenIds.has(parsed.id)) {
+          seenIds.add(parsed.id);
+          parsedParts.push(parsed);
+        }
+      });
+      parsedParts.sort((a, b) => b.timestamp - a.timestamp);
       participations = parsedParts;
       if (parsedParts.length > 0) hasRemoteData = true;
     }

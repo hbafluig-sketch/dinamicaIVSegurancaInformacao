@@ -21,7 +21,14 @@ import type {
   Scene,
   ViewMode,
 } from './types/gincana.ts';
-import { fetchFromAppsScript, postToAppsScript } from './utils/appsScript.ts';
+import {
+  fetchFromAppsScript,
+  postToAppsScript,
+  serializeCenariosForAppsScript,
+  serializeEstoqueForAppsScript,
+  serializeParticipationForAppsScript,
+  serializeQuizForAppsScript,
+} from './utils/appsScript.ts';
 import {
   cacheProjectLocal,
   cacheRouletteLocal,
@@ -84,7 +91,7 @@ export default function App() {
     setToast({ id: Date.now(), text, tone });
     toastTimerRef.current = window.setTimeout(() => {
       setToast(null);
-    }, 3000);
+    }, tone === 'warn' ? 6000 : 3500);
   }, []);
 
   useEffect(() => {
@@ -163,6 +170,57 @@ export default function App() {
     }
   }, [showToast]);
 
+  const handlePushAllRemote = useCallback(async () => {
+    setSyncingRemote(true);
+    const steps: Array<{ label: string; run: () => Promise<Record<string, unknown>> }> = [
+      {
+        label: 'estoque',
+        run: () =>
+          postToAppsScript(
+            'estoque',
+            serializeEstoqueForAppsScript(rouletteDataRef.current.settings),
+          ),
+      },
+      {
+        label: 'quiz',
+        run: () =>
+          postToAppsScript(
+            'quiz',
+            serializeQuizForAppsScript(rouletteDataRef.current.quizQuestions),
+          ),
+      },
+      {
+        label: 'cenarios',
+        run: () =>
+          postToAppsScript('cenarios', serializeCenariosForAppsScript(scenesRef.current)),
+      },
+    ];
+
+    const summary: string[] = [];
+    let hasError = false;
+
+    for (const step of steps) {
+      try {
+        const res = await step.run();
+        const statusText = typeof res?.status === 'string' ? res.status : 'ok';
+        summary.push(`${step.label}: ${statusText}`);
+      } catch (err) {
+        hasError = true;
+        const msg = err instanceof Error ? err.message : 'erro desconhecido';
+        console.log(`[AppsScript Push] Falha em "${step.label}":`, err);
+        summary.push(`${step.label}: ${msg}`);
+      }
+    }
+
+    setSyncingRemote(false);
+    showToast(
+      hasError
+        ? summary.join(' | ')
+        : `Enviado para a planilha (${summary.join(' | ')})`,
+      hasError ? 'warn' : 'success',
+    );
+  }, [showToast]);
+
   const totalRegions = totalRegionsInScenes(scenes);
   const canPlay = totalRegions >= ROUND_TARGET;
   const remainingRegions = Math.max(0, totalRegions - activeGame.found.length);
@@ -173,10 +231,18 @@ export default function App() {
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => {
         void saveProject(nextScenes)
-          .then((saved) => postToAppsScript('cenarios', saved.scenes))
+          .then((saved) =>
+            postToAppsScript('cenarios', serializeCenariosForAppsScript(saved.scenes)),
+          )
+          .then(() => {
+            showToast('Enviado para a planilha', 'success');
+          })
           .catch((err) => {
-            console.warn('Erro ao enviar cenários para Apps Script:', err);
-            showToast('Cenários salvos localmente, mas houve erro ao enviar para a planilha.', 'warn');
+            console.log('Erro ao enviar cenários para Apps Script:', err);
+            showToast(
+              err instanceof Error ? err.message : 'Erro ao enviar cenários para a planilha.',
+              'warn',
+            );
           });
       }, 380);
     },
@@ -188,11 +254,14 @@ export default function App() {
       const data = await resetToDefaultScenes(preserveCustom);
       setScenes(data.scenes);
       try {
-        await postToAppsScript('cenarios', data.scenes);
-        showToast('Cenários padrão restaurados e enviados para a planilha.', 'success');
+        await postToAppsScript('cenarios', serializeCenariosForAppsScript(data.scenes));
+        showToast('Enviado para a planilha', 'success');
       } catch (err) {
-        console.warn('Erro ao enviar cenários padrão para Apps Script:', err);
-        showToast('Cenários restaurados localmente, mas falhou o envio para a planilha.', 'warn');
+        console.log('Erro ao enviar cenários padrão para Apps Script:', err);
+        showToast(
+          err instanceof Error ? err.message : 'Erro ao enviar cenários para a planilha.',
+          'warn',
+        );
       }
     },
     [showToast],
@@ -297,15 +366,20 @@ export default function App() {
         setRouletteData(res.data);
 
         try {
-          await postToAppsScript('historico', {
-            ...res.record,
-            dataHora: new Date(res.record.timestamp).toLocaleString('pt-BR'),
-          });
-          await postToAppsScript('estoque', res.data.settings);
+          const participationPayload = serializeParticipationForAppsScript(res.record);
+          await postToAppsScript('participacoes', participationPayload);
+          await postToAppsScript('historico', participationPayload);
+          await postToAppsScript(
+            'estoque',
+            serializeEstoqueForAppsScript(res.data.settings),
+          );
+          showToast('Enviado para a planilha', 'success');
         } catch (syncErr) {
-          console.warn('Erro ao enviar giro/estoque para Apps Script:', syncErr);
+          console.log('Erro ao enviar giro/estoque para Apps Script:', syncErr);
           showToast(
-            'Giro salvo localmente, mas houve falha ao enviar para o Google Apps Script.',
+            syncErr instanceof Error
+              ? syncErr.message
+              : 'Erro ao enviar giro para a planilha.',
             'warn',
           );
         }
@@ -340,12 +414,18 @@ export default function App() {
       );
       setRouletteData(updated);
       try {
-        await postToAppsScript('estoque', updated.settings);
-        await postToAppsScript('quiz', updated.quizQuestions);
+        await postToAppsScript(
+          'estoque',
+          serializeEstoqueForAppsScript(updated.settings),
+        );
+        await postToAppsScript('quiz', serializeQuizForAppsScript(updated.quizQuestions));
+        showToast('Enviado para a planilha', 'success');
       } catch (err) {
-        console.warn('Erro ao enviar configurações/quiz para Apps Script:', err);
+        console.log('Erro ao enviar configurações/quiz para Apps Script:', err);
         showToast(
-          'Alterações salvas localmente, mas houve erro ao enviar para o Google Apps Script.',
+          err instanceof Error
+            ? err.message
+            : 'Erro ao enviar alterações para a planilha.',
           'warn',
         );
       }
@@ -377,11 +457,12 @@ export default function App() {
         },
       }));
       try {
-        await postToAppsScript('estoque', nextSettings);
+        await postToAppsScript('estoque', serializeEstoqueForAppsScript(nextSettings));
+        showToast('Enviado para a planilha', 'success');
       } catch (err) {
-        console.warn('Erro ao enviar estoque para Apps Script:', err);
+        console.log('Erro ao enviar estoque para Apps Script:', err);
         showToast(
-          'Estoque salvo localmente, mas houve erro ao enviar para o Google Apps Script.',
+          err instanceof Error ? err.message : 'Erro ao enviar estoque para a planilha.',
           'warn',
         );
       }
@@ -394,10 +475,13 @@ export default function App() {
     setRouletteData(updated);
     try {
       await postToAppsScript('historico', []);
-      showToast('Histórico da roleta limpo.', 'info');
+      showToast('Enviado para a planilha', 'success');
     } catch (err) {
-      console.warn('Erro ao limpar histórico no Apps Script:', err);
-      showToast('Histórico limpo localmente, mas houve erro ao atualizar a planilha.', 'warn');
+      console.log('Erro ao limpar histórico no Apps Script:', err);
+      showToast(
+        err instanceof Error ? err.message : 'Erro ao atualizar histórico na planilha.',
+        'warn',
+      );
     }
   }, [showToast]);
 
@@ -405,12 +489,15 @@ export default function App() {
     const updated = await resetRouletteDefaults();
     setRouletteData(updated);
     try {
-      await postToAppsScript('estoque', updated.settings);
-      await postToAppsScript('quiz', updated.quizQuestions);
-      showToast('Configurações da roleta restauradas e sincronizadas.', 'success');
+      await postToAppsScript('estoque', serializeEstoqueForAppsScript(updated.settings));
+      await postToAppsScript('quiz', serializeQuizForAppsScript(updated.quizQuestions));
+      showToast('Enviado para a planilha', 'success');
     } catch (err) {
-      console.warn('Erro ao restaurar padrões no Apps Script:', err);
-      showToast('Configurações restauradas localmente, mas falhou o envio para a planilha.', 'warn');
+      console.log('Erro ao restaurar padrões no Apps Script:', err);
+      showToast(
+        err instanceof Error ? err.message : 'Erro ao enviar padrões para a planilha.',
+        'warn',
+      );
     }
   }, [showToast]);
 
@@ -432,9 +519,21 @@ export default function App() {
       showToast('Cadastre ao menos uma região em cada imagem.', 'warn');
       return;
     }
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     void saveProject(scenes)
-      .then((saved) => postToAppsScript('cenarios', saved.scenes))
-      .catch((err) => console.warn('Erro ao finalizar admin:', err));
+      .then((saved) =>
+        postToAppsScript('cenarios', serializeCenariosForAppsScript(saved.scenes)),
+      )
+      .then(() => {
+        showToast('Enviado para a planilha', 'success');
+      })
+      .catch((err) => {
+        console.log('Erro ao finalizar admin:', err);
+        showToast(
+          err instanceof Error ? err.message : 'Erro ao enviar cenários para a planilha.',
+          'warn',
+        );
+      });
     setView('start');
   }, [scenes, showToast]);
 
@@ -553,6 +652,7 @@ export default function App() {
             rouletteData={rouletteData}
             syncingRemote={syncingRemote}
             onReloadRemote={handleReloadRemote}
+            onPushAllRemote={handlePushAllRemote}
             onChangeScenes={handleChangeScenes}
             onResetDefaults={handleResetDefaults}
             onSaveRouletteSettings={handleSaveRouletteSettings}
