@@ -28,6 +28,7 @@ import type {
   WheelItem,
 } from '../types/gincana.ts';
 import { playTone } from '../utils/sound.ts';
+import { GoogleSignInButton } from './GoogleSignInButton.tsx';
 
 const ACTIVE_FACTORY_KEY = 'cyber_roleta_active_factory_v5';
 
@@ -49,6 +50,9 @@ interface RouletteViewProps {
   remainingRegions?: number;
   pendingReset?: boolean;
   muted: boolean;
+  needsGoogleAuth?: boolean;
+  isGoogleSigningIn?: boolean;
+  onGoogleSignIn?: () => Promise<void>;
   onSpinComplete: (
     payload: Omit<Participation, 'id' | 'timestamp'>,
   ) => Promise<{ ok: boolean; error?: string; record?: Participation }>;
@@ -99,65 +103,91 @@ function fitWheelText(
   return { lines: wrapWheelText(ctx, text, maxWidth), fontSize: 9, lineHeight: 10.5 };
 }
 
-function pickSmartWeightedSlice(slices: PlacedSlice[], recentPrizeIds: string[]): number {
+function pickWeightedFromCandidates(
+  candidates: Array<{ slice: PlacedSlice; idx: number }>,
+): number {
+  const totalWeight = candidates.reduce((sum, entry) => sum + entry.slice.weight, 0);
+  if (totalWeight <= 0) return candidates[0].idx;
+  let r = Math.random() * totalWeight;
+  for (const { slice, idx } of candidates) {
+    r -= slice.weight;
+    if (r <= 0) return idx;
+  }
+  return candidates[candidates.length - 1].idx;
+}
+
+function isDicaItem(item: WheelItem): boolean {
+  return item.outcomeType === 'dica' || item.id === 'dica';
+}
+
+function isDescansoItem(item: WheelItem): boolean {
+  return item.id === 'descanso_copo' || item.label.toLowerCase().includes('descanso');
+}
+
+function pickSmartWeightedSlice(
+  slices: PlacedSlice[],
+  recentPrizeIds: string[],
+  nextSpinNumber: number,
+): number {
   const active = slices
     .map((slice, idx) => ({ slice, idx }))
     .filter(({ slice }) => slice.weight > 0);
   if (active.length === 0) return -1;
   if (active.length === 1) return active[0].idx;
 
-  const totalWeight = active.reduce((sum, entry) => sum + entry.slice.weight, 0);
-  const last0 = recentPrizeIds[0];
-  const last1 = recentPrizeIds[1];
-  const last2 = recentPrizeIds[2];
-  const windowSize = Math.min(recentPrizeIds.length, 10);
-  const recentWindow = recentPrizeIds.slice(0, windowSize);
-  const counts: Record<string, number> = {};
-  for (const id of recentWindow) {
-    counts[id] = (counts[id] || 0) + 1;
+  const dicaCandidates = active.filter(({ slice }) => isDicaItem(slice.item));
+  const descansoCandidates = active.filter(({ slice }) => isDescansoItem(slice.item));
+  const otherPrizeCandidates = active.filter(
+    ({ slice }) => !isDicaItem(slice.item) && !isDescansoItem(slice.item),
+  );
+
+  // Every 7th spin: vary among the other prizes (excluding Dica and Descanso de Copo)
+  if (nextSpinNumber % 7 === 0 && otherPrizeCandidates.length > 0) {
+    const otherIds = new Set(otherPrizeCandidates.map((c) => c.slice.item.id));
+    const lastOtherId = recentPrizeIds.find((id) => otherIds.has(id));
+    const variedCandidates =
+      otherPrizeCandidates.length >= 2 && lastOtherId
+        ? otherPrizeCandidates.filter((c) => c.slice.item.id !== lastOtherId)
+        : otherPrizeCandidates;
+    return pickWeightedFromCandidates(variedCandidates);
   }
 
-  const adjusted = active.map(({ slice, idx }) => {
-    const share = slice.weight / totalWeight;
-    const balance = windowSize * share - (counts[slice.item.id] || 0);
-    const balanceFactor = balance >= 0 ? 1 + balance * 0.85 : 1 / (1 + Math.abs(balance) * 1.6);
-    let repeatPenalty = 1;
-    if (slice.item.id === last0) {
-      repeatPenalty = (active.length >= 3 && share < 0.7) || last1 === slice.item.id ? 0 : 0.08;
-    } else if (slice.item.id === last1 && active.length >= 3) {
-      repeatPenalty = 0.35;
-    } else if (slice.item.id === last2 && active.length >= 4) {
-      repeatPenalty = 0.65;
+  // Every 3rd spin: Descanso de Copo
+  if (nextSpinNumber % 3 === 0 && descansoCandidates.length > 0) {
+    return pickWeightedFromCandidates(descansoCandidates);
+  }
+
+  // Default (every 1 spin): Dica
+  if (dicaCandidates.length > 0) {
+    return pickWeightedFromCandidates(dicaCandidates);
+  }
+
+  // Fallback if scheduled category ran out of stock: weighted by stock, max 4 consecutive repeats
+  const lastId = recentPrizeIds[0];
+  let consecutiveCount = 0;
+  if (lastId) {
+    for (const id of recentPrizeIds) {
+      if (id === lastId) {
+        consecutiveCount++;
+      } else {
+        break;
+      }
     }
-    return {
-      idx,
-      effectiveWeight: Math.max(0, slice.weight * balanceFactor * repeatPenalty),
-    };
-  });
-
-  const adjustedTotal = adjusted.reduce((sum, entry) => sum + entry.effectiveWeight, 0);
-  if (adjustedTotal <= 0) {
-    let r = Math.random() * totalWeight;
-    for (const { slice, idx } of active) {
-      r -= slice.weight;
-      if (r <= 0) return idx;
-    }
-    return active[0].idx;
   }
 
-  let r = Math.random() * adjustedTotal;
-  for (const entry of adjusted) {
-    r -= entry.effectiveWeight;
-    if (r <= 0) return entry.idx;
-  }
-  return adjusted[0].idx;
+  const eligible =
+    consecutiveCount >= 4 && active.some(({ slice }) => slice.item.id !== lastId)
+      ? active.filter(({ slice }) => slice.item.id !== lastId)
+      : active;
+
+  return pickWeightedFromCandidates(eligible);
 }
 
 function PrizeThumb({ imageUrl, name }: { imageUrl?: string; name: string }) {
   const [broken, setBroken] = useState(false);
   if (!imageUrl || broken) {
     return (
-      <div className="w-12 h-12 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+      <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
         <ImageOff className="w-4 h-4 text-slate-400" />
       </div>
     );
@@ -168,7 +198,7 @@ function PrizeThumb({ imageUrl, name }: { imageUrl?: string; name: string }) {
       alt={name}
       referrerPolicy="no-referrer"
       onError={() => setBroken(true)}
-      className="w-12 h-12 rounded-lg object-contain p-1 border border-slate-200 bg-white shrink-0"
+      className="w-10 h-10 rounded-lg object-contain p-1 border border-slate-200 bg-white shrink-0"
     />
   );
 }
@@ -180,6 +210,9 @@ export function RouletteView({
   remainingRegions = 0,
   pendingReset = false,
   muted,
+  needsGoogleAuth = false,
+  isGoogleSigningIn = false,
+  onGoogleSignIn,
   onSpinComplete,
   onFinishRoundNextPlayer,
   onBackToGame,
@@ -217,6 +250,7 @@ export function RouletteView({
   const [resultRecord, setResultRecord] = useState<Participation | null>(null);
   const [resultItem, setResultItem] = useState<WheelItem | null>(null);
   const [resultImgBroken, setResultImgBroken] = useState(false);
+  const [showMobilePrizes, setShowMobilePrizes] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const angleRef = useRef(0);
@@ -246,13 +280,12 @@ export function RouletteView({
 
   const factoryStock = settings.stocks[factory] || {};
 
-  // Weighted slices: keep all configured items visible on the wheel; items with stock 0 get weight 0 so they cannot be drawn
+  // Weighted slices: keep all configured items visible on the wheel; probability is directly proportional to stockQty
   const weightedItems: WeightedSlice[] = useMemo(
     () =>
       settings.items.map((item) => {
         const stockQty = Math.max(0, Number(factoryStock[item.id] ?? 0));
-        const weight = stockQty > 0 ? stockQty * Math.max(1, Number(item.weight || 1)) : 0;
-        return { item, weight };
+        return { item, weight: stockQty };
       }),
     [factoryStock, settings.items],
   );
@@ -268,13 +301,23 @@ export function RouletteView({
     }));
   }, [weightedItems]);
 
-  const recentPrizeIds = useMemo(
+  const factoryParticipations = useMemo(
     () =>
       participations
-        .filter((p) => p.factory === factory && Boolean(p.prizeId))
-        .slice(0, 12)
-        .map((p) => p.prizeId),
+        .filter((p) => p.factory === factory)
+        .slice()
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)),
     [factory, participations],
+  );
+
+  const nextSpinNumber = factoryParticipations.length + 1;
+
+  const recentPrizeIds = useMemo(
+    () =>
+      factoryParticipations
+        .filter((p) => Boolean(p.prizeId))
+        .map((p) => p.prizeId),
+    [factoryParticipations],
   );
 
   const fireResultConfetti = useCallback((isTip: boolean) => {
@@ -486,7 +529,7 @@ export function RouletteView({
     setSpinning(true);
     setSpinFinished(true);
 
-    const chosenIdx = pickSmartWeightedSlice(placedSlices, recentPrizeIds);
+    const chosenIdx = pickSmartWeightedSlice(placedSlices, recentPrizeIds, nextSpinNumber);
     if (chosenIdx === -1) {
       setSpinning(false);
       setSpinFinished(false);
@@ -599,28 +642,39 @@ export function RouletteView({
   const totalWeight = weightedItems.reduce((sum, entry) => sum + entry.weight, 0);
 
   return (
-    <div className="space-y-6">
+    <div className="flex-1 w-full min-h-0 flex flex-col items-center justify-center gap-2 sm:gap-3 overflow-hidden">
+      {needsGoogleAuth && onGoogleSignIn && step === 'REGISTRATION' && (
+        <section className="w-full max-w-5xl shrink-0 rounded-xl border border-amber-200 bg-amber-50/90 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold text-amber-950">
+            Conecte sua conta Google para salvar os próximos giros automaticamente no Google Sheets.
+          </p>
+          <GoogleSignInButton
+            onClick={() => void onGoogleSignIn()}
+            disabled={isGoogleSigningIn}
+            label={isGoogleSigningIn ? 'Conectando...' : 'Sign in with Google'}
+          />
+        </section>
+      )}
+
       {roundMode && (
-        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-xs font-bold text-emerald-800">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Rodada {roundNumber} concluída · 3 acertos alcançados</span>
+        <section className="w-full max-w-5xl shrink-0 rounded-xl border border-emerald-200 bg-emerald-50/80 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 min-w-0">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>Rodada {roundNumber} concluída · 3 acertos</span>
             </div>
-            <h2 className="font-display text-lg sm:text-xl font-extrabold text-slate-900">
-              Roleta de Cibersegurança liberada
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-700">
+            <span className="hidden sm:inline text-slate-300" aria-hidden="true">·</span>
+            <p className="text-xs text-slate-700 truncate">
               {pendingReset
-                ? `Restam ${remainingRegions} região(ões) no jogo. Após o giro, a próxima pessoa iniciará um novo ciclo.`
-                : `Ainda restam ${remainingRegions} regiões no mapa para a próxima pessoa continuar.`}
+                ? `Restam ${remainingRegions} região(ões). Próxima pessoa inicia um novo ciclo.`
+                : `Restam ${remainingRegions} regiões no mapa para a próxima rodada.`}
             </p>
           </div>
           {onBackToGame && step === 'REGISTRATION' && (
             <button
               type="button"
               onClick={onBackToGame}
-              className="px-4 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer whitespace-nowrap shrink-0"
+              className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer whitespace-nowrap shrink-0"
             >
               Voltar ao cenário
             </button>
@@ -630,23 +684,23 @@ export function RouletteView({
 
       {/* STEP 1: REGISTRATION */}
       {step === 'REGISTRATION' && (
-        <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-9 shadow-sm">
-            <div className="text-center mb-7">
-              <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-slate-100 text-slate-800 mb-4">
-                <ShieldCheck className="w-6 h-6 text-emerald-600" />
+        <div className="w-full max-w-lg mx-auto flex-1 min-h-0 flex items-center justify-center overflow-y-auto py-1">
+          <div className="w-full bg-white border border-slate-200 rounded-2xl p-5 sm:p-7 shadow-sm">
+            <div className="text-center mb-5">
+              <div className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-slate-100 text-slate-800 mb-3">
+                <ShieldCheck className="w-5 h-5 text-emerald-600" />
               </div>
-              <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 mb-1.5">
+              <h1 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mb-1">
                 Identificação
               </h1>
-              <p className="text-sm text-slate-500">
+              <p className="text-xs sm:text-sm text-slate-500">
                 Confirme a fábrica e digite o seu registro para girar a roleta
               </p>
             </div>
 
-            <form onSubmit={handleSubmitRegistration} className="space-y-6">
+            <form onSubmit={handleSubmitRegistration} className="space-y-4">
               <div>
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2.5">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
                   <Building2 className="w-3.5 h-3.5 text-slate-500" />
                   <span>Fábrica / Unidade</span>
                 </label>
@@ -658,7 +712,7 @@ export function RouletteView({
                         key={f}
                         type="button"
                         onClick={() => handleSelectFactory(f)}
-                        className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer text-left ${
+                        className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs font-semibold transition-all cursor-pointer text-left ${
                           active
                             ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
@@ -675,7 +729,7 @@ export function RouletteView({
               <div>
                 <label
                   htmlFor="reg-input"
-                  className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2"
+                  className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5"
                 >
                   Registro
                 </label>
@@ -689,7 +743,7 @@ export function RouletteView({
                     if (regError) setRegError('');
                   }}
                   placeholder="Digite seu registro..."
-                  className={`w-full px-4 py-3.5 bg-slate-50 border rounded-xl text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-1 transition-all font-mono text-base ${
+                  className={`w-full px-4 py-3 bg-slate-50 border rounded-xl text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-1 transition-all font-mono text-base ${
                     regError
                       ? 'border-rose-400 focus:border-rose-500 focus:ring-rose-500'
                       : 'border-slate-300 focus:border-slate-900 focus:ring-slate-900'
@@ -699,7 +753,7 @@ export function RouletteView({
 
               {/* Optional Cybersecurity Quick Quiz when enabled in Admin */}
               {settings.quizEnabled && currentQuestion && (
-                <div className="pt-4 border-t border-slate-200 space-y-3">
+                <div className="pt-3 border-t border-slate-200 space-y-2.5">
                   <div className="flex items-center gap-2 text-xs font-bold text-sky-800">
                     <HelpCircle className="w-4 h-4" />
                     <span>Quiz rápido de cibersegurança</span>
@@ -707,7 +761,7 @@ export function RouletteView({
                   <p className="text-sm font-semibold text-slate-900 leading-snug">
                     {currentQuestion.question}
                   </p>
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {currentQuestion.options.map((opt, idx) => {
                       const chosen = selectedOption === idx;
                       const isCorrect = idx === currentQuestion.correctIndex;
@@ -728,7 +782,7 @@ export function RouletteView({
                           type="button"
                           disabled={quizSubmitted}
                           onClick={() => setSelectedOption(idx)}
-                          className={`w-full text-left px-3 py-2.5 rounded-xl border text-xs transition-colors cursor-pointer flex items-start gap-2 ${cls}`}
+                          className={`w-full text-left px-3 py-2 rounded-xl border text-xs transition-colors cursor-pointer flex items-start gap-2 ${cls}`}
                         >
                           <span className="font-mono font-bold shrink-0">
                             {String.fromCharCode(65 + idx)}.
@@ -751,13 +805,13 @@ export function RouletteView({
                           muted,
                         );
                       }}
-                      className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                      className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold disabled:opacity-40 cursor-pointer"
                     >
                       Confirmar resposta
                     </button>
                   ) : (
                     <div
-                      className={`rounded-xl border p-3 text-xs space-y-1 ${
+                      className={`rounded-xl border p-2.5 text-xs space-y-1 ${
                         selectedOption === currentQuestion.correctIndex
                           ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                           : 'bg-amber-50 border-amber-200 text-amber-900'
@@ -783,7 +837,7 @@ export function RouletteView({
               )}
 
               {regError && (
-                <div className="flex items-start gap-2 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium leading-relaxed">
+                <div className="flex items-start gap-2 p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium leading-relaxed">
                   <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                   <span>{regError}</span>
                 </div>
@@ -791,7 +845,7 @@ export function RouletteView({
 
               <button
                 type="submit"
-                className="w-full flex items-center justify-center gap-2 py-3.5 px-6 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-medium rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
+                className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-medium rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
               >
                 <span>Ir para a Roleta</span>
                 <ArrowRight className="w-4 h-4" />
@@ -803,8 +857,8 @@ export function RouletteView({
 
       {/* STEP 2: ROULETTE WHEEL */}
       {step === 'ROULETTE' && (
-        <div className="w-full max-w-6xl mx-auto py-2 sm:py-4">
-          <div className="flex items-center justify-between mb-5 pb-3.5 border-b border-slate-200">
+        <div className="w-full max-w-5xl mx-auto flex-1 min-h-0 flex flex-col items-center justify-center gap-2 overflow-hidden relative">
+          <div className="w-full shrink-0 flex items-center justify-between pb-2 border-b border-slate-200">
             <button
               type="button"
               disabled={spinning}
@@ -818,7 +872,7 @@ export function RouletteView({
               <span>Voltar</span>
             </button>
 
-            <div className="flex items-center gap-4 text-xs text-slate-500">
+            <div className="flex items-center gap-3 text-xs text-slate-500">
               <div className="flex items-center gap-1.5 text-slate-700 font-medium">
                 <Building2 className="w-3.5 h-3.5 text-slate-400" />
                 <span>{factory}</span>
@@ -828,22 +882,30 @@ export function RouletteView({
                 <span>Registro: </span>
                 <strong className="text-slate-900 font-mono font-medium">{registration}</strong>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowMobilePrizes((v) => !v)}
+                className="lg:hidden inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-slate-700 font-semibold cursor-pointer"
+              >
+                <Gift className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Prêmios</span>
+              </button>
             </div>
           </div>
 
-          <div className="text-center mb-6">
-            <h1 className="font-display text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight mb-1">
+          <div className="text-center shrink-0">
+            <h1 className="font-display text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
               Roleta de Prêmios
             </h1>
-            <p className="text-xs sm:text-sm text-slate-500 max-w-lg mx-auto">
+            <p className="text-xs text-slate-500 max-w-lg mx-auto">
               Gire a roleta para concorrer aos brindes disponíveis ou receber uma dica de segurança da informação.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-            <div className="lg:col-span-8 flex justify-center">
+          <div className="w-full flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_310px] gap-4 lg:gap-6 items-center justify-items-center overflow-hidden">
+            <div className="w-full h-full min-h-0 flex flex-col items-center justify-center">
               {placedSlices.length === 0 ? (
-                <div className="flex flex-col items-center justify-center p-8 bg-white border border-rose-200 rounded-2xl text-center max-w-md mx-auto shadow-sm">
+                <div className="flex flex-col items-center justify-center p-6 bg-white border border-rose-200 rounded-2xl text-center max-w-md mx-auto shadow-sm">
                   <AlertCircle className="w-10 h-10 text-rose-500 mb-3" />
                   <h3 className="text-base font-bold text-slate-900 mb-1">
                     Nenhum Item Disponível na Roleta
@@ -854,20 +916,20 @@ export function RouletteView({
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center w-full mx-auto">
-                  <div className="relative mb-[-16px] z-20 flex justify-center">
+                  <div className="relative mb-[-12px] z-20 flex justify-center">
                     <div
                       className="transition-transform duration-75 ease-out"
                       style={{ transform: `rotate(${pointerTilt}deg)` }}
                     >
-                      <div className="w-0 h-0 border-l-[16px] border-l-transparent border-r-[16px] border-r-transparent border-t-[32px] border-t-amber-500 drop-shadow-md filter" />
+                      <div className="w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[26px] border-t-amber-500 drop-shadow-md filter" />
                     </div>
                   </div>
 
-                  <div className="relative p-2.5 bg-white rounded-full border border-slate-200 shadow-xl">
+                  <div className="relative p-2 bg-white rounded-full border border-slate-200 shadow-xl">
                     <div className="relative">
                       <canvas
                         ref={canvasRef}
-                        className="w-[330px] h-[330px] sm:w-[440px] sm:h-[440px] lg:w-[500px] lg:h-[500px] rounded-full select-none block"
+                        className="w-[min(70vw,44dvh)] h-[min(70vw,44dvh)] sm:w-[min(56vw,48dvh)] sm:h-[min(56vw,48dvh)] lg:w-[min(42vw,52dvh,450px)] lg:h-[min(42vw,52dvh,450px)] rounded-full select-none block"
                       />
                       <button
                         type="button"
@@ -884,12 +946,12 @@ export function RouletteView({
                     </div>
                   </div>
 
-                  <div className="mt-6 flex flex-col items-center gap-2">
+                  <div className="mt-3 sm:mt-4 flex flex-col items-center gap-1.5">
                     <button
                       type="button"
                       onClick={handleSpin}
                       disabled={spinning || spinFinished || totalWeight <= 0}
-                      className={`flex items-center justify-center gap-2.5 px-9 py-3.5 rounded-xl font-semibold text-sm transition-all transform active:scale-95 shadow-sm whitespace-nowrap shrink-0 cursor-pointer ${
+                      className={`flex items-center justify-center gap-2 px-8 py-2.5 sm:py-3 rounded-xl font-semibold text-sm transition-all transform active:scale-95 shadow-sm whitespace-nowrap shrink-0 cursor-pointer ${
                         spinning || spinFinished || totalWeight <= 0
                           ? 'bg-slate-200 text-slate-500 cursor-not-allowed opacity-80'
                           : 'bg-slate-900 hover:bg-slate-800 text-white'
@@ -910,7 +972,7 @@ export function RouletteView({
                       )}
                     </button>
 
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-slate-400 text-center">
                       {totalWeight <= 0
                         ? 'Todos os itens estão com estoque zerado nesta fábrica. Ajuste no painel Administrador.'
                         : spinning
@@ -924,8 +986,8 @@ export function RouletteView({
               )}
             </div>
 
-            <div className="lg:col-span-4 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="hidden lg:flex w-full max-h-full flex-col bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-2.5 overflow-y-auto">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100 shrink-0">
                 <div className="flex items-center gap-2">
                   <Gift className="w-4 h-4 text-emerald-600" />
                   <h2 className="text-xs font-bold text-slate-800 tracking-wider uppercase">
@@ -935,21 +997,21 @@ export function RouletteView({
               </div>
 
               {weightedItems.length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-400">
+                <div className="py-4 text-center text-xs text-slate-400">
                   Nenhum item configurado no momento.
                 </div>
               ) : (
-                <div className="space-y-2.5">
+                <div className="space-y-1.5">
                   {weightedItems.map(({ item }) => {
                     const isTip = item.outcomeType === 'dica' || item.id === 'dica';
                     return (
                       <div
                         key={item.id}
-                        className="flex items-center gap-3 p-2.5 rounded-xl border bg-slate-50/70 border-slate-200"
+                        className="flex items-center gap-2.5 p-2 rounded-xl border bg-slate-50/70 border-slate-200"
                       >
                         {isTip ? (
-                          <div className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0 border border-amber-200 bg-amber-50 text-amber-600">
-                            <Lightbulb className="w-5 h-5" />
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 border border-amber-200 bg-amber-50 text-amber-600">
+                            <Lightbulb className="w-4 h-4" />
                           </div>
                         ) : (
                           <PrizeThumb imageUrl={item.imageUrl} name={item.label} />
@@ -970,41 +1032,97 @@ export function RouletteView({
               )}
             </div>
           </div>
+
+          {showMobilePrizes && (
+            <div
+              className="lg:hidden fixed inset-0 z-40 bg-slate-950/50 flex items-center justify-center p-4"
+              onClick={() => setShowMobilePrizes(false)}
+            >
+              <div
+                className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl p-4 shadow-xl space-y-3 max-h-[75dvh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <Gift className="w-4 h-4 text-emerald-600" />
+                    <h2 className="text-xs font-bold text-slate-800 tracking-wider uppercase">
+                      Prêmios da Roleta
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowMobilePrizes(false)}
+                    className="text-xs font-semibold text-slate-500 hover:text-slate-900 cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {weightedItems.map(({ item }) => {
+                    const isTip = item.outcomeType === 'dica' || item.id === 'dica';
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-2.5 p-2 rounded-xl border bg-slate-50/70 border-slate-200"
+                      >
+                        {isTip ? (
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 border border-amber-200 bg-amber-50 text-amber-600">
+                            <Lightbulb className="w-4 h-4" />
+                          </div>
+                        ) : (
+                          <PrizeThumb imageUrl={item.imageUrl} name={item.label} />
+                        )}
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: item.color }}
+                          />
+                          <span className="text-xs font-bold text-slate-900 truncate">
+                            {item.label}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* STEP 3: RESULT */}
       {step === 'RESULT' && resultRecord && (
-        <div className="w-full max-w-lg mx-auto py-4 sm:py-8">
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 sm:p-9 shadow-sm text-center">
+        <div className="w-full max-w-lg mx-auto flex-1 min-h-0 flex items-center justify-center overflow-y-auto py-1">
+          <div className="w-full bg-white border border-slate-200 rounded-3xl p-5 sm:p-7 shadow-sm text-center">
             {resultRecord.outcomeType === 'dica' ? (
               <>
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4 bg-amber-50 text-amber-600 border border-amber-200">
-                  <Lightbulb className="w-7 h-7" />
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-3 bg-amber-50 text-amber-600 border border-amber-200">
+                  <Lightbulb className="w-6 h-6" />
                 </div>
-                <h2 className="font-display text-2xl font-bold text-slate-900 tracking-tight mb-2">
+                <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mb-1.5">
                   Dica de Segurança da Informação
                 </h2>
-                <p className="text-xs text-slate-500 mb-6">
+                <p className="text-xs text-slate-500 mb-4">
                   Leia com atenção e leve essa proteção para o seu dia a dia
                 </p>
-                <div className="bg-amber-50/80 border-2 border-amber-300 rounded-2xl p-6 mb-6 shadow-sm">
-                  <p className="text-lg sm:text-xl font-bold text-slate-900 leading-relaxed">
+                <div className="bg-amber-50/80 border-2 border-amber-300 rounded-2xl p-4 sm:p-5 mb-4 shadow-sm">
+                  <p className="text-base sm:text-lg font-bold text-slate-900 leading-relaxed">
                     “{resultRecord.tipText}”
                   </p>
                 </div>
               </>
             ) : (
               <>
-                <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl mb-3 bg-emerald-50 text-emerald-600 border border-emerald-100">
-                  <Award className="w-6 h-6" />
+                <div className="inline-flex items-center justify-center w-11 h-11 rounded-2xl mb-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100">
+                  <Award className="w-5 h-5" />
                 </div>
-                <h2 className="font-display text-2xl font-bold text-slate-900 tracking-tight mb-5">
+                <h2 className="font-display text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mb-3.5">
                   Parabéns! Você ganhou:
                 </h2>
-                <div className="p-5 rounded-2xl border border-slate-200 bg-slate-50/70 mb-6 flex flex-col items-center">
+                <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50/70 mb-4 flex flex-col items-center">
                   {resultItem?.imageUrl && !resultImgBroken ? (
-                    <div className="w-48 h-48 sm:w-56 sm:h-56 rounded-2xl overflow-hidden border border-slate-200 bg-white shadow-sm mb-4 p-2 flex items-center justify-center">
+                    <div className="w-36 h-36 sm:w-44 sm:h-44 rounded-2xl overflow-hidden border border-slate-200 bg-white shadow-sm mb-3 p-2 flex items-center justify-center">
                       <img
                         src={resultItem.imageUrl}
                         alt={resultRecord.prizeName}
@@ -1014,26 +1132,26 @@ export function RouletteView({
                       />
                     </div>
                   ) : (
-                    <div className="w-40 h-40 rounded-2xl border border-slate-200 bg-white flex items-center justify-center mb-4">
+                    <div className="w-32 h-32 rounded-2xl border border-slate-200 bg-white flex items-center justify-center mb-3">
                       <ImageOff className="w-8 h-8 text-slate-300" />
                     </div>
                   )}
-                  <div className="text-xl sm:text-2xl font-extrabold text-slate-900 leading-snug">
+                  <div className="text-lg sm:text-xl font-extrabold text-slate-900 leading-snug">
                     {resultRecord.prizeName}
                   </div>
                 </div>
               </>
             )}
 
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6 space-y-2 text-xs text-slate-600">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 mb-4 space-y-1.5 text-xs text-slate-600">
+              <div className="flex items-center justify-between pb-1.5 border-b border-slate-200">
                 <span className="flex items-center gap-1.5 text-slate-500">
                   <Building2 className="w-3.5 h-3.5" />
                   <span>Fábrica / Unidade:</span>
                 </span>
                 <span className="font-semibold text-slate-900">{resultRecord.factory}</span>
               </div>
-              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+              <div className="flex items-center justify-between pb-1.5 border-b border-slate-200">
                 <span className="flex items-center gap-1.5 text-slate-500">
                   <UserCheck className="w-3.5 h-3.5" />
                   <span>Registro:</span>
@@ -1057,13 +1175,13 @@ export function RouletteView({
             </div>
 
             {resultRecord.outcomeType === 'prize' && (
-              <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 mb-6">
+              <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 mb-4">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>Apresente ao responsável para retirar seu brinde</span>
               </div>
             )}
 
-            <div className="space-y-2.5">
+            <div className="space-y-2">
               {roundMode && onFinishRoundNextPlayer ? (
                 <button
                   type="button"
@@ -1071,7 +1189,7 @@ export function RouletteView({
                     playTone('click', muted);
                     onFinishRoundNextPlayer();
                   }}
-                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white font-semibold rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
+                  className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white font-semibold rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
                 >
                   <span>Iniciar vez da próxima pessoa</span>
                   <ArrowRight className="w-4 h-4" />
@@ -1080,7 +1198,7 @@ export function RouletteView({
                 <button
                   type="button"
                   onClick={handleResetToRegistration}
-                  className="w-full flex items-center justify-center gap-2 py-3.5 px-6 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-medium rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
+                  className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-slate-900 hover:bg-slate-800 active:scale-[0.99] text-white font-medium rounded-xl transition-colors cursor-pointer text-sm whitespace-nowrap shrink-0 shadow-sm"
                 >
                   <RotateCcw className="w-4 h-4" />
                   <span>Próximo Participante</span>

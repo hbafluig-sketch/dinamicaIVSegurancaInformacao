@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { User } from 'firebase/auth';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AdminView } from './components/AdminView.tsx';
 import { GameView } from './components/GameView.tsx';
@@ -12,6 +13,12 @@ import { StartView } from './components/StartView.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { createDefaultRouletteData } from './data/defaultRoulette.ts';
 import { DEFAULT_SCENES, ROUND_TARGET } from './data/defaultScenes.ts';
+import {
+  clearGoogleAccessToken,
+  googleSignIn,
+  googleSignOut,
+  initGoogleAuth,
+} from './firebase.ts';
 import type {
   GameState,
   Participation,
@@ -22,12 +29,31 @@ import type {
   ViewMode,
 } from './types/gincana.ts';
 import {
+  appendParticipationToSheet,
+  clearParticipationsInSheet,
+  createGincanaSpreadsheet,
+  type GoogleSheetConfig,
+  GoogleSheetsAuthError,
+  inspectSpreadsheet,
+  loadAllFromGoogleSheet,
+  loadSavedSheetConfig,
+  saveSheetConfig,
+  syncAllToGoogleSheet,
+  syncScenesToSheet,
+  syncSettingsToSheet,
+  syncStocksToSheet,
+} from './utils/googleSheets.ts';
+import {
+  cacheProjectLocal,
+  cacheRouletteLocal,
   clearPersistedGameState,
   clearRouletteParticipations,
+  isFirestoreQuotaFallback,
   loadGameState,
   loadProject,
   loadRouletteData,
   persistGameState,
+  recordLocalRouletteSpin,
   recordRouletteSpin,
   resetRouletteDefaults,
   resetToDefaultScenes,
@@ -68,16 +94,47 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [loading, setLoading] = useState(true);
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState(false);
+  const [sheetConfig, setSheetConfig] = useState<GoogleSheetConfig | null>(() =>
+    loadSavedSheetConfig(),
+  );
+  const [sheetBusyAction, setSheetBusyAction] = useState<string | null>(null);
+
   const toastTimerRef = useRef<number | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const lastLocalSceneEditRef = useRef<number>(0);
+
+  const rouletteDataRef = useRef<RouletteData>(rouletteData);
+  rouletteDataRef.current = rouletteData;
+  const scenesRef = useRef<Scene[]>(scenes);
+  scenesRef.current = scenes;
+  const googleTokenRef = useRef<string | null>(googleToken);
+  googleTokenRef.current = googleToken;
+  const sheetConfigRef = useRef<GoogleSheetConfig | null>(sheetConfig);
+  sheetConfigRef.current = sheetConfig;
 
   const showToast = useCallback((text: string, tone: 'info' | 'success' | 'warn' = 'info') => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToast({ id: Date.now(), text, tone });
     toastTimerRef.current = window.setTimeout(() => {
       setToast(null);
-    }, 2400);
+    }, 2800);
+  }, []);
+
+  useEffect(() => {
+    const unsubAuth = initGoogleAuth(
+      (user, token) => {
+        setGoogleUser(user);
+        setGoogleToken(token);
+      },
+      (user) => {
+        setGoogleUser(user);
+        setGoogleToken(null);
+      },
+    );
+    return () => unsubAuth();
   }, []);
 
   useEffect(() => {
@@ -96,6 +153,13 @@ export default function App() {
           setActiveGame(game);
         }
         setRouletteData(roulette);
+
+        if (isFirestoreQuotaFallback()) {
+          showToast(
+            'Cota diária do Firebase atingida. Exibindo últimos dados em cache local para consulta e exportação.',
+            'warn',
+          );
+        }
 
         unsubScenes = subscribeProject((nextScenes) => {
           if (!active) return;
@@ -125,26 +189,251 @@ export default function App() {
     };
   }, []);
 
+  const handleSheetsError = useCallback(
+    (err: unknown, fallbackMessage: string) => {
+      console.error(err);
+      if (err instanceof GoogleSheetsAuthError) {
+        clearGoogleAccessToken();
+        setGoogleToken(null);
+        showToast(
+          err.message ||
+            'Sessão do Google expirada. Faça login novamente na aba Google Sheets.',
+          'warn',
+        );
+        return;
+      }
+      showToast(err instanceof Error ? err.message : fallbackMessage, 'warn');
+    },
+    [showToast],
+  );
+
+  const touchSheetSyncTime = useCallback(() => {
+    const cur = sheetConfigRef.current;
+    if (!cur) return;
+    const updated: GoogleSheetConfig = { ...cur, lastSyncedAt: new Date().toISOString() };
+    setSheetConfig(updated);
+    saveSheetConfig(updated);
+  }, []);
+
+  const handlePullAllFromSheet = useCallback(
+    async (explicitToken?: string, explicitConfig?: GoogleSheetConfig) => {
+      const token = explicitToken ?? googleTokenRef.current;
+      const cfg = explicitConfig ?? sheetConfigRef.current;
+      if (!token || !cfg) return;
+      setSheetBusyAction('pull');
+      try {
+        const loaded = await loadAllFromGoogleSheet(
+          token,
+          cfg.spreadsheetId,
+          rouletteDataRef.current,
+          scenesRef.current,
+        );
+        if (loaded.hasSheetData) {
+          setRouletteData(loaded.rouletteData);
+          setScenes(loaded.scenes);
+          cacheRouletteLocal(loaded.rouletteData);
+          cacheProjectLocal({
+            version: 8,
+            updatedAt: new Date().toISOString(),
+            scenes: loaded.scenes,
+          });
+          touchSheetSyncTime();
+          showToast('Dados carregados da planilha Google Sheets.', 'success');
+        } else {
+          showToast('A planilha conectada ainda não possui dados preenchidos.', 'info');
+        }
+      } catch (err) {
+        handleSheetsError(err, 'Erro ao ler dados do Google Sheets.');
+      } finally {
+        setSheetBusyAction(null);
+      }
+    },
+    [handleSheetsError, showToast, touchSheetSyncTime],
+  );
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setIsGoogleSigningIn(true);
+    try {
+      const { user, accessToken } = await googleSignIn();
+      setGoogleUser(user);
+      setGoogleToken(accessToken);
+      showToast('Conta Google conectada ao Google Sheets.', 'success');
+      if (sheetConfigRef.current) {
+        await handlePullAllFromSheet(accessToken, sheetConfigRef.current);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast(
+        err instanceof Error ? err.message : 'Não foi possível conectar sua conta Google.',
+        'warn',
+      );
+    } finally {
+      setIsGoogleSigningIn(false);
+    }
+  }, [handlePullAllFromSheet, showToast]);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    await googleSignOut();
+    setGoogleUser(null);
+    setGoogleToken(null);
+    showToast('Sessão Google desconectada.', 'info');
+  }, [showToast]);
+
+  const handleCreateSpreadsheet = useCallback(
+    async (title: string) => {
+      const token = googleTokenRef.current;
+      if (!token) {
+        showToast('Conecte sua conta Google primeiro.', 'warn');
+        return;
+      }
+      setSheetBusyAction('create');
+      try {
+        const cfg = await createGincanaSpreadsheet(
+          token,
+          rouletteDataRef.current,
+          scenesRef.current,
+          title,
+        );
+        setSheetConfig(cfg);
+        showToast(`Planilha "${cfg.spreadsheetTitle}" criada e sincronizada!`, 'success');
+      } catch (err) {
+        handleSheetsError(err, 'Não foi possível criar a planilha no Google Sheets.');
+      } finally {
+        setSheetBusyAction(null);
+      }
+    },
+    [handleSheetsError, showToast],
+  );
+
+  const handleConnectSpreadsheet = useCallback(
+    async (spreadsheetId: string) => {
+      const token = googleTokenRef.current;
+      if (!token) {
+        showToast('Conecte sua conta Google primeiro.', 'warn');
+        return;
+      }
+      setSheetBusyAction('connect');
+      try {
+        const info = await inspectSpreadsheet(token, spreadsheetId);
+        const cfg: GoogleSheetConfig = {
+          spreadsheetId: info.spreadsheetId,
+          spreadsheetTitle: info.spreadsheetTitle,
+          spreadsheetUrl: info.spreadsheetUrl,
+          autoSyncEnabled: false,
+        };
+        setSheetConfig(cfg);
+        saveSheetConfig(cfg);
+        showToast(`Planilha "${cfg.spreadsheetTitle}" vinculada com sucesso.`, 'success');
+        await handlePullAllFromSheet(token, cfg);
+      } catch (err) {
+        handleSheetsError(err, 'Não foi possível acessar a planilha informada.');
+      } finally {
+        setSheetBusyAction(null);
+      }
+    },
+    [handlePullAllFromSheet, handleSheetsError, showToast],
+  );
+
+  const handleToggleSheetAutoSync = useCallback(
+    (enabled: boolean) => {
+      const cur = sheetConfigRef.current;
+      if (!cur) return;
+      const updated: GoogleSheetConfig = { ...cur, autoSyncEnabled: enabled };
+      setSheetConfig(updated);
+      saveSheetConfig(updated);
+      showToast(
+        enabled
+          ? 'Gravação automática no Google Sheets ativada.'
+          : 'Gravação automática no Google Sheets desativada.',
+        enabled ? 'success' : 'info',
+      );
+    },
+    [showToast],
+  );
+
+  const handlePushAllToSheet = useCallback(async () => {
+    const token = googleTokenRef.current;
+    const cfg = sheetConfigRef.current;
+    if (!token || !cfg) return;
+    setSheetBusyAction('push');
+    try {
+      await syncAllToGoogleSheet(
+        token,
+        cfg.spreadsheetId,
+        rouletteDataRef.current,
+        scenesRef.current,
+      );
+      touchSheetSyncTime();
+      showToast('Todos os dados foram enviados para o Google Sheets.', 'success');
+    } catch (err) {
+      handleSheetsError(err, 'Erro ao enviar dados para o Google Sheets.');
+    } finally {
+      setSheetBusyAction(null);
+    }
+  }, [handleSheetsError, showToast, touchSheetSyncTime]);
+
+  const handleClearSheetParticipations = useCallback(async () => {
+    const token = googleTokenRef.current;
+    const cfg = sheetConfigRef.current;
+    if (!token || !cfg) return;
+    setSheetBusyAction('clear');
+    try {
+      await clearParticipationsInSheet(token, cfg.spreadsheetId);
+      touchSheetSyncTime();
+      showToast('Aba Participacoes limpa no Google Sheets.', 'info');
+    } catch (err) {
+      handleSheetsError(err, 'Erro ao limpar participações na planilha.');
+    } finally {
+      setSheetBusyAction(null);
+    }
+  }, [handleSheetsError, showToast, touchSheetSyncTime]);
+
+  const handleDisconnectSheet = useCallback(() => {
+    setSheetConfig(null);
+    saveSheetConfig(null);
+    showToast('Planilha desvinculada do aplicativo.', 'info');
+  }, [showToast]);
+
   const totalRegions = totalRegionsInScenes(scenes);
   const canPlay = totalRegions >= ROUND_TARGET;
   const remainingRegions = Math.max(0, totalRegions - activeGame.found.length);
 
-  const handleChangeScenes = useCallback(async (nextScenes: Scene[]) => {
-    lastLocalSceneEditRef.current = Date.now();
-    setScenes(nextScenes);
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      void saveProject(nextScenes);
-    }, 380);
-  }, []);
+  const handleChangeScenes = useCallback(
+    async (nextScenes: Scene[]) => {
+      lastLocalSceneEditRef.current = Date.now();
+      setScenes(nextScenes);
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = window.setTimeout(() => {
+        void saveProject(nextScenes);
+        const token = googleTokenRef.current;
+        const cfg = sheetConfigRef.current;
+        if (token && cfg?.autoSyncEnabled) {
+          void syncScenesToSheet(token, cfg.spreadsheetId, nextScenes)
+            .then(() => touchSheetSyncTime())
+            .catch((err) => handleSheetsError(err, 'Erro ao salvar cenários no Google Sheets.'));
+        }
+      }, 380);
+    },
+    [handleSheetsError, touchSheetSyncTime],
+  );
 
   const handleResetDefaults = useCallback(
     async (preserveCustom: boolean) => {
       const data = await resetToDefaultScenes(preserveCustom);
       setScenes(data.scenes);
+      const token = googleTokenRef.current;
+      const cfg = sheetConfigRef.current;
+      if (token && cfg?.autoSyncEnabled) {
+        try {
+          await syncScenesToSheet(token, cfg.spreadsheetId, data.scenes);
+          touchSheetSyncTime();
+        } catch (err) {
+          handleSheetsError(err, 'Erro ao atualizar cenários na planilha.');
+        }
+      }
       showToast('Cenários padrão restaurados com sucesso.', 'success');
     },
-    [showToast],
+    [handleSheetsError, showToast, touchSheetSyncTime],
   );
 
   const handleStartNewGame = useCallback(() => {
@@ -238,10 +527,30 @@ export default function App() {
   const handleSpinComplete = useCallback(
     async (payload: Omit<Participation, 'id' | 'timestamp'>) => {
       try {
-        const res = await recordRouletteSpin(payload);
+        const token = googleTokenRef.current;
+        const cfg = sheetConfigRef.current;
+        const useSheetsPrimary = Boolean(token && cfg?.autoSyncEnabled);
+
+        const res = useSheetsPrimary
+          ? await recordLocalRouletteSpin(rouletteDataRef.current, payload)
+          : await recordRouletteSpin(payload, rouletteDataRef.current);
+
         if ('error' in res) {
           return { ok: false, error: res.error };
         }
+
+        if (useSheetsPrimary && token && cfg) {
+          await appendParticipationToSheet(
+            token,
+            cfg.spreadsheetId,
+            res.record,
+            res.data.settings.stocks,
+            res.data.settings.items,
+            res.data.settings.factories,
+          );
+          touchSheetSyncTime();
+        }
+
         setRouletteData(res.data);
         const currentGame = activeGameRef.current;
         if (rouletteRoundMode || currentGame.roundHits >= ROUND_TARGET) {
@@ -255,35 +564,60 @@ export default function App() {
         return { ok: true, record: res.record };
       } catch (err) {
         console.error(err);
+        if (err instanceof GoogleSheetsAuthError) {
+          clearGoogleAccessToken();
+          setGoogleToken(null);
+          return {
+            ok: false,
+            error: 'Sessão do Google expirada. Clique em Sign in with Google para continuar salvando na planilha.',
+          };
+        }
         return {
           ok: false,
           error: 'Não foi possível registrar a participação no banco de dados. Tente novamente.',
         };
       }
     },
-    [advanceGameToNextRound, rouletteRoundMode],
+    [advanceGameToNextRound, rouletteRoundMode, touchSheetSyncTime],
   );
 
   const handleSaveRouletteSettings = useCallback(
     async (settings: RouletteSettings, quizQuestions: QuizQuestion[]) => {
+      const token = googleTokenRef.current;
+      const cfg = sheetConfigRef.current;
+      const useSheetsPrimary = Boolean(token && cfg?.autoSyncEnabled);
+
       try {
         const updated = await saveRouletteSettings(
           settings,
           quizQuestions,
           rouletteData.participations,
+          useSheetsPrimary,
         );
+        if (useSheetsPrimary && token && cfg) {
+          await syncSettingsToSheet(token, cfg.spreadsheetId, updated.settings, updated.quizQuestions);
+          touchSheetSyncTime();
+        }
         setRouletteData(updated);
       } catch (err) {
-        console.error(err);
-        showToast('Erro ao salvar configurações da roleta.', 'warn');
+        if (err instanceof GoogleSheetsAuthError) {
+          handleSheetsError(err, 'Sessão do Google expirada.');
+        } else {
+          console.error(err);
+          showToast('Erro ao salvar configurações da roleta.', 'warn');
+        }
         throw err;
       }
     },
-    [rouletteData.participations, showToast],
+    [handleSheetsError, rouletteData.participations, showToast, touchSheetSyncTime],
   );
 
   const handleSaveRouletteStocks = useCallback(
     async (stocks: Record<string, Record<string, number>>) => {
+      const token = googleTokenRef.current;
+      const cfg = sheetConfigRef.current;
+      const useSheetsPrimary = Boolean(token && cfg?.autoSyncEnabled);
+
       setRouletteData((prev) => ({
         ...prev,
         settings: {
@@ -292,7 +626,17 @@ export default function App() {
         },
       }));
       try {
-        const updatedAt = await saveRouletteStock(stocks);
+        const updatedAt = await saveRouletteStock(stocks, useSheetsPrimary);
+        if (useSheetsPrimary && token && cfg) {
+          await syncStocksToSheet(
+            token,
+            cfg.spreadsheetId,
+            stocks,
+            rouletteDataRef.current.settings.items,
+            rouletteDataRef.current.settings.factories,
+          );
+          touchSheetSyncTime();
+        }
         setRouletteData((prev) => ({
           ...prev,
           settings: {
@@ -302,25 +646,53 @@ export default function App() {
           },
         }));
       } catch (err) {
-        console.error(err);
-        showToast('Erro ao atualizar o estoque no Firebase.', 'warn');
+        if (err instanceof GoogleSheetsAuthError) {
+          handleSheetsError(err, 'Sessão do Google expirada.');
+        } else {
+          console.error(err);
+          showToast('Erro ao atualizar o estoque.', 'warn');
+        }
         throw err;
       }
     },
-    [showToast],
+    [handleSheetsError, showToast, touchSheetSyncTime],
   );
 
   const handleClearRouletteHistory = useCallback(async () => {
-    const updated = await clearRouletteParticipations();
+    const token = googleTokenRef.current;
+    const cfg = sheetConfigRef.current;
+    const useSheetsPrimary = Boolean(token && cfg?.autoSyncEnabled);
+
+    const updated = await clearRouletteParticipations(useSheetsPrimary);
+    if (useSheetsPrimary && token && cfg) {
+      try {
+        await clearParticipationsInSheet(token, cfg.spreadsheetId);
+        touchSheetSyncTime();
+      } catch (err) {
+        handleSheetsError(err, 'Erro ao limpar participações na planilha.');
+      }
+    }
     setRouletteData(updated);
     showToast('Histórico da roleta limpo.', 'info');
-  }, [showToast]);
+  }, [handleSheetsError, showToast, touchSheetSyncTime]);
 
   const handleResetRoulette = useCallback(async () => {
-    const updated = await resetRouletteDefaults();
+    const token = googleTokenRef.current;
+    const cfg = sheetConfigRef.current;
+    const useSheetsPrimary = Boolean(token && cfg?.autoSyncEnabled);
+
+    const updated = await resetRouletteDefaults(useSheetsPrimary);
+    if (useSheetsPrimary && token && cfg) {
+      try {
+        await syncSettingsToSheet(token, cfg.spreadsheetId, updated.settings, updated.quizQuestions);
+        touchSheetSyncTime();
+      } catch (err) {
+        handleSheetsError(err, 'Erro ao restaurar padrões na planilha.');
+      }
+    }
     setRouletteData(updated);
     showToast('Configurações da roleta restauradas.', 'success');
-  }, [showToast]);
+  }, [handleSheetsError, showToast, touchSheetSyncTime]);
 
   const handleFinishGame = useCallback(() => {
     setRouletteRoundMode(false);
@@ -384,7 +756,7 @@ export default function App() {
   return (
     <div
       className={
-        view === 'game'
+        view === 'game' || view === 'roulette'
           ? 'h-dvh overflow-hidden flex flex-col bg-slate-50 text-slate-900'
           : 'min-h-screen flex flex-col bg-slate-50 text-slate-900'
       }
@@ -401,7 +773,9 @@ export default function App() {
         className={
           view === 'game'
             ? 'flex-1 w-full max-w-none mx-auto px-2.5 sm:px-4 py-2 flex flex-col min-h-0 overflow-hidden'
-            : 'flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8'
+            : view === 'roulette'
+              ? 'flex-1 max-w-6xl w-full mx-auto px-3 sm:px-6 py-2 sm:py-3 flex flex-col min-h-0 overflow-hidden'
+              : 'flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8'
         }
       >
         {loading ? (
@@ -435,6 +809,9 @@ export default function App() {
             remainingRegions={remainingRegions}
             pendingReset={activeGame.pendingReset}
             muted={muted}
+            needsGoogleAuth={Boolean(sheetConfig?.autoSyncEnabled && !googleToken)}
+            isGoogleSigningIn={isGoogleSigningIn}
+            onGoogleSignIn={handleGoogleSignIn}
             onSpinComplete={handleSpinComplete}
             onFinishRoundNextPlayer={handleFinishRoundNextPlayer}
             onBackToGame={() => {
@@ -455,6 +832,20 @@ export default function App() {
           <AdminView
             scenes={scenes}
             rouletteData={rouletteData}
+            googleUser={googleUser}
+            hasGoogleToken={Boolean(googleToken)}
+            isGoogleSigningIn={isGoogleSigningIn}
+            sheetConfig={sheetConfig}
+            sheetBusyAction={sheetBusyAction}
+            onGoogleSignIn={handleGoogleSignIn}
+            onGoogleSignOut={handleGoogleSignOut}
+            onCreateSpreadsheet={handleCreateSpreadsheet}
+            onConnectSpreadsheet={handleConnectSpreadsheet}
+            onToggleSheetAutoSync={handleToggleSheetAutoSync}
+            onPushAllToSheet={handlePushAllToSheet}
+            onPullAllFromSheet={() => handlePullAllFromSheet()}
+            onClearSheetParticipations={handleClearSheetParticipations}
+            onDisconnectSheet={handleDisconnectSheet}
             onChangeScenes={handleChangeScenes}
             onResetDefaults={handleResetDefaults}
             onSaveRouletteSettings={handleSaveRouletteSettings}
@@ -467,7 +858,7 @@ export default function App() {
         )}
       </main>
 
-      {view !== 'game' && (
+      {view !== 'game' && view !== 'roulette' && (
         <footer className="border-t border-slate-200 bg-white py-4 px-4 text-center text-xs font-semibold text-slate-600">
           Segurança da Informação é responsabilidade de todos.
         </footer>

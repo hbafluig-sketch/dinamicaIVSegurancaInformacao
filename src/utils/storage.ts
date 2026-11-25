@@ -19,7 +19,7 @@ import {
   DEFAULT_PRIZE_IMAGES,
 } from '../data/defaultRoulette.ts';
 import { DEFAULT_SCENES } from '../data/defaultScenes.ts';
-import { db, handleFirestoreError, OperationType } from '../firebase.ts';
+import { db, handleFirestoreError, hasFirestoreDatabase, OperationType } from '../firebase.ts';
 import type {
   ClassificationType,
   GameState,
@@ -44,6 +44,61 @@ const REMOVED_BUILTIN_IDS = new Set([
 ]);
 
 const CURRENT_ROULETTE_VERSION = 3;
+
+let quotaFallbackActive = !hasFirestoreDatabase;
+
+export function isFirestoreQuotaFallback(): boolean {
+  return quotaFallbackActive && hasFirestoreDatabase;
+}
+
+export function isQuotaExceededError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  return /quota exceeded|resource-exhausted|not_found|database .* does not exist|cloud firestore api has not been used/i.test(
+    msg,
+  );
+}
+
+function readLocalProject(): ProjectData | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_PROJECT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ProjectData>;
+    if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+      return {
+        version: typeof parsed.version === 'number' ? parsed.version : 8,
+        updatedAt:
+          typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+        scenes: parsed.scenes.filter((s) => !REMOVED_BUILTIN_IDS.has(s.id)),
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function readLocalRoulette(): RouletteData | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_ROULETTE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RouletteData>;
+    if (parsed && parsed.settings && Array.isArray(parsed.settings.items)) {
+      const defaults = createDefaultRouletteData();
+      return {
+        version: typeof parsed.version === 'number' ? parsed.version : CURRENT_ROULETTE_VERSION,
+        settings: parsed.settings,
+        participations: Array.isArray(parsed.participations) ? parsed.participations : [],
+        quizQuestions:
+          Array.isArray(parsed.quizQuestions) && parsed.quizQuestions.length > 0
+            ? parsed.quizQuestions
+            : defaults.quizQuestions,
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 export function uid(prefix = 'id'): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -134,7 +189,7 @@ function docToScene(data: Partial<FirestoreSceneDoc>, fallbackOrder: number): Sc
   };
 }
 
-function cacheProjectLocal(project: ProjectData): void {
+export function cacheProjectLocal(project: ProjectData): void {
   try {
     localStorage.setItem(LOCAL_PROJECT_KEY, JSON.stringify(project));
   } catch {
@@ -175,10 +230,53 @@ function participationsQuery() {
 /* ---------- Project / Scenes Firestore Persistence ---------- */
 
 export async function loadProject(): Promise<ProjectData> {
+  if (!hasFirestoreDatabase) {
+    const local = readLocalProject();
+    if (local) return local;
+    try {
+      const res = await fetch('/api/project');
+      if (res.ok) {
+        const serverData = (await res.json()) as ProjectData;
+        if (Array.isArray(serverData.scenes) && serverData.scenes.length > 0) {
+          return serverData;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return {
+      version: 8,
+      updatedAt: new Date().toISOString(),
+      scenes: structuredClone(DEFAULT_SCENES),
+    };
+  }
+
   let snapshot;
   try {
     snapshot = await getDocs(scenesQuery());
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      quotaFallbackActive = true;
+      console.warn('Cota do Firestore atingida ao carregar cenários; usando backup local.', error);
+      const local = readLocalProject();
+      if (local) return local;
+      try {
+        const res = await fetch('/api/project');
+        if (res.ok) {
+          const serverData = (await res.json()) as ProjectData;
+          if (Array.isArray(serverData.scenes) && serverData.scenes.length > 0) {
+            return serverData;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return {
+        version: 8,
+        updatedAt: new Date().toISOString(),
+        scenes: structuredClone(DEFAULT_SCENES),
+      };
+    }
     handleFirestoreError(error, OperationType.LIST, 'scenes');
   }
 
@@ -250,6 +348,9 @@ export async function loadProject(): Promise<ProjectData> {
 }
 
 export function subscribeProject(onScenes: (scenes: Scene[]) => void): Unsubscribe {
+  if (quotaFallbackActive) {
+    return () => {};
+  }
   return onSnapshot(
     scenesQuery(),
     (snapshot) => {
@@ -269,6 +370,11 @@ export function subscribeProject(onScenes: (scenes: Scene[]) => void): Unsubscri
       }
     },
     (error) => {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida na sincronização de cenários.', error);
+        return;
+      }
       handleFirestoreError(error, OperationType.LIST, 'scenes');
     },
   );
@@ -281,45 +387,66 @@ export async function saveProject(scenes: Scene[]): Promise<ProjectData> {
 
   const nextIds = new Set(cleanList.map((s) => s.id));
 
-  let existingSnap;
-  try {
-    existingSnap = await getDocs(scenesQuery());
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'scenes');
-  }
-
-  try {
-    const batch = writeBatch(db);
-    existingSnap.docs.forEach((d) => {
-      if (!nextIds.has(d.id)) {
-        batch.delete(doc(db, 'scenes', d.id));
-      }
-    });
-    cleanList.forEach((sc) => {
-      batch.set(doc(db, 'scenes', sc.id), sc);
-    });
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'scenes');
-  }
-
   const payload: ProjectData = {
     version: 8,
     updatedAt: new Date().toISOString(),
     scenes: cleanList.map((sc, idx) => docToScene(sc, idx)),
   };
+
+  if (!quotaFallbackActive) {
+    let existingSnap;
+    try {
+      existingSnap = await getDocs(scenesQuery());
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao salvar cenários; salvando localmente.', error);
+        cacheProjectLocal(payload);
+        void mirrorProjectToExpress(payload);
+        return payload;
+      }
+      handleFirestoreError(error, OperationType.LIST, 'scenes');
+    }
+
+    try {
+      const batch = writeBatch(db);
+      existingSnap.docs.forEach((d) => {
+        if (!nextIds.has(d.id)) {
+          batch.delete(doc(db, 'scenes', d.id));
+        }
+      });
+      cleanList.forEach((sc) => {
+        batch.set(doc(db, 'scenes', sc.id), sc);
+      });
+      await batch.commit();
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao gravar cenários; salvando localmente.', error);
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'scenes');
+      }
+    }
+  }
+
   cacheProjectLocal(payload);
   void mirrorProjectToExpress(payload);
   return payload;
 }
 
 export async function resetToDefaultScenes(preserveCustom: boolean): Promise<ProjectData> {
-  let currentDocs: Scene[] = [];
-  try {
-    const snap = await getDocs(scenesQuery());
-    currentDocs = snap.docs.map((d, idx) => docToScene(d.data() as Partial<FirestoreSceneDoc>, idx));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'scenes');
+  let currentDocs: Scene[] = readLocalProject()?.scenes ?? [];
+  if (!quotaFallbackActive && hasFirestoreDatabase) {
+    try {
+      const snap = await getDocs(scenesQuery());
+      currentDocs = snap.docs.map((d, idx) => docToScene(d.data() as Partial<FirestoreSceneDoc>, idx));
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+      } else {
+        handleFirestoreError(error, OperationType.LIST, 'scenes');
+      }
+    }
   }
 
   const customScenes = preserveCustom
@@ -335,28 +462,35 @@ export async function resetToDefaultScenes(preserveCustom: boolean): Promise<Pro
 /* ---------- Game State Persistence ---------- */
 
 export async function loadGameState(): Promise<GameState | null> {
-  try {
-    const snap = await getDoc(doc(db, 'game_state', 'active'));
-    if (snap.exists()) {
-      const data = snap.data() as GameState & { updatedAt?: number };
-      const state: GameState = {
-        sceneIndex: Number(data.sceneIndex ?? 0),
-        hits: Number(data.hits ?? 0),
-        misses: Number(data.misses ?? 0),
-        found: Array.isArray(data.found) ? data.found : [],
-        roundHits: Number(data.roundHits ?? 0),
-        round: Number(data.round ?? 1),
-        pendingReset: Boolean(data.pendingReset),
-      };
-      try {
-        localStorage.setItem(LOCAL_GAME_KEY, JSON.stringify(state));
-      } catch {
-        // ignore
+  if (hasFirestoreDatabase && !quotaFallbackActive) {
+    try {
+      const snap = await getDoc(doc(db, 'game_state', 'active'));
+      if (snap.exists()) {
+        const data = snap.data() as GameState & { updatedAt?: number };
+        const state: GameState = {
+          sceneIndex: Number(data.sceneIndex ?? 0),
+          hits: Number(data.hits ?? 0),
+          misses: Number(data.misses ?? 0),
+          found: Array.isArray(data.found) ? data.found : [],
+          roundHits: Number(data.roundHits ?? 0),
+          round: Number(data.round ?? 1),
+          pendingReset: Boolean(data.pendingReset),
+        };
+        try {
+          localStorage.setItem(LOCAL_GAME_KEY, JSON.stringify(state));
+        } catch {
+          // ignore
+        }
+        return state;
       }
-      return state;
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao carregar estado do jogo; usando backup local.', error);
+      } else {
+        handleFirestoreError(error, OperationType.GET, 'game_state/active');
+      }
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, 'game_state/active');
   }
 
   try {
@@ -385,10 +519,17 @@ export async function persistGameState(state: GameState): Promise<void> {
     // ignore
   }
 
-  try {
-    await setDoc(doc(db, 'game_state', 'active'), payload);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'game_state/active');
+  if (!quotaFallbackActive) {
+    try {
+      await setDoc(doc(db, 'game_state', 'active'), payload);
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao salvar estado do jogo; mantendo cache local.', error);
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'game_state/active');
+      }
+    }
   }
 
   try {
@@ -408,10 +549,16 @@ export async function clearPersistedGameState(): Promise<void> {
   } catch {
     // ignore
   }
-  try {
-    await deleteDoc(doc(db, 'game_state', 'active'));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, 'game_state/active');
+  if (!quotaFallbackActive && hasFirestoreDatabase) {
+    try {
+      await deleteDoc(doc(db, 'game_state', 'active'));
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+      } else {
+        handleFirestoreError(error, OperationType.DELETE, 'game_state/active');
+      }
+    }
   }
   try {
     await fetch('/api/game-state', { method: 'DELETE' });
@@ -500,7 +647,7 @@ function buildQuizDoc(questions: QuizQuestion[], updatedAt?: string): QuizBankDo
   };
 }
 
-function cacheRouletteLocal(data: RouletteData): void {
+export function cacheRouletteLocal(data: RouletteData): void {
   try {
     localStorage.setItem(LOCAL_ROULETTE_KEY, JSON.stringify(data));
   } catch {
@@ -510,6 +657,20 @@ function cacheRouletteLocal(data: RouletteData): void {
 
 export async function loadRouletteData(): Promise<RouletteData> {
   const defaults = createDefaultRouletteData();
+
+  if (!hasFirestoreDatabase) {
+    const local = readLocalRoulette();
+    if (local) return local;
+    try {
+      const res = await fetch('/api/roulette');
+      if (res.ok) {
+        return (await res.json()) as RouletteData;
+      }
+    } catch {
+      // ignore
+    }
+    return defaults;
+  }
 
   let configSnap;
   let stockSnap;
@@ -524,6 +685,21 @@ export async function loadRouletteData(): Promise<RouletteData> {
       getDocs(participationsQuery()),
     ]);
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      quotaFallbackActive = true;
+      console.warn('Cota do Firestore atingida ao carregar dados da roleta; usando backup local.', error);
+      const local = readLocalRoulette();
+      if (local) return local;
+      try {
+        const res = await fetch('/api/roulette');
+        if (res.ok) {
+          return (await res.json()) as RouletteData;
+        }
+      } catch {
+        // ignore
+      }
+      return defaults;
+    }
     handleFirestoreError(error, OperationType.GET, 'settings/wheel_config');
   }
 
@@ -652,6 +828,10 @@ export function subscribeRouletteData(
   initialData: RouletteData,
   onUpdate: (data: RouletteData) => void,
 ): Unsubscribe {
+  if (quotaFallbackActive) {
+    return () => {};
+  }
+
   let latest: RouletteData = structuredClone(initialData);
 
   const emit = () => {
@@ -660,6 +840,15 @@ export function subscribeRouletteData(
       ...latest,
       settings: { ...latest.settings },
     });
+  };
+
+  const handleSubError = (error: unknown, op: OperationType, path: string) => {
+    if (isQuotaExceededError(error)) {
+      quotaFallbackActive = true;
+      console.warn(`Cota do Firestore atingida em ${path}.`, error);
+      return;
+    }
+    handleFirestoreError(error, op, path);
   };
 
   const unsubConfig = onSnapshot(
@@ -681,7 +870,7 @@ export function subscribeRouletteData(
       };
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.GET, 'settings/wheel_config'),
+    (error) => handleSubError(error, OperationType.GET, 'settings/wheel_config'),
   );
 
   const unsubStock = onSnapshot(
@@ -699,7 +888,7 @@ export function subscribeRouletteData(
       };
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.GET, 'settings/wheel_stock'),
+    (error) => handleSubError(error, OperationType.GET, 'settings/wheel_stock'),
   );
 
   const unsubQuiz = onSnapshot(
@@ -713,7 +902,7 @@ export function subscribeRouletteData(
       };
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.GET, 'settings/quiz_bank'),
+    (error) => handleSubError(error, OperationType.GET, 'settings/quiz_bank'),
   );
 
   const unsubParts = onSnapshot(
@@ -725,7 +914,7 @@ export function subscribeRouletteData(
       };
       emit();
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, 'participations'),
+    (error) => handleSubError(error, OperationType.LIST, 'participations'),
   );
 
   return () => {
@@ -738,13 +927,32 @@ export function subscribeRouletteData(
 
 export async function saveRouletteStock(
   stocks: Record<string, Record<string, number>>,
+  skipFirestore = false,
 ): Promise<string> {
   const nowIso = new Date().toISOString();
   const payload = buildStockDoc(stocks, nowIso);
-  try {
-    await setDoc(doc(db, 'settings', 'wheel_stock'), payload);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'settings/wheel_stock');
+  const local = readLocalRoulette();
+  if (local) {
+    cacheRouletteLocal({
+      ...local,
+      settings: {
+        ...local.settings,
+        stocks: payload.stocks,
+        updatedAt: nowIso,
+      },
+    });
+  }
+  if (!skipFirestore && !quotaFallbackActive) {
+    try {
+      await setDoc(doc(db, 'settings', 'wheel_stock'), payload);
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao atualizar estoque; mantendo cache local.', error);
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'settings/wheel_stock');
+      }
+    }
   }
   return nowIso;
 }
@@ -753,6 +961,7 @@ export async function saveRouletteSettings(
   settings: RouletteSettings,
   quizQuestions: QuizQuestion[],
   cachedParticipations?: Participation[],
+  skipFirestore = false,
 ): Promise<RouletteData> {
   const nowIso = new Date().toISOString();
   const nextSettings: RouletteSettings = {
@@ -761,23 +970,34 @@ export async function saveRouletteSettings(
     updatedAt: nowIso,
   };
 
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'settings', 'wheel_config'), buildConfigDoc(nextSettings));
-    batch.set(doc(db, 'settings', 'wheel_stock'), buildStockDoc(nextSettings.stocks, nowIso));
-    batch.set(doc(db, 'settings', 'quiz_bank'), buildQuizDoc(quizQuestions, nowIso));
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'settings');
+  if (!skipFirestore && !quotaFallbackActive) {
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'settings', 'wheel_config'), buildConfigDoc(nextSettings));
+      batch.set(doc(db, 'settings', 'wheel_stock'), buildStockDoc(nextSettings.stocks, nowIso));
+      batch.set(doc(db, 'settings', 'quiz_bank'), buildQuizDoc(quizQuestions, nowIso));
+      await batch.commit();
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+        console.warn('Cota do Firestore atingida ao salvar configurações; mantendo cache local.', error);
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'settings');
+      }
+    }
   }
 
   let participations: Participation[] = cachedParticipations ?? [];
-  if (!cachedParticipations) {
+  if (!cachedParticipations && !skipFirestore && !quotaFallbackActive) {
     try {
       const partSnap = await getDocs(participationsQuery());
       participations = partSnap.docs.map((d) => d.data() as Participation);
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'participations');
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+      } else {
+        handleFirestoreError(error, OperationType.LIST, 'participations');
+      }
     }
   }
 
@@ -827,12 +1047,86 @@ function sanitizeParticipation(input: Participation): Participation {
   return record;
 }
 
-export async function recordRouletteSpin(
+export async function recordLocalRouletteSpin(
+  currentData: RouletteData,
   participation: Omit<Participation, 'id' | 'timestamp'>,
 ): Promise<{ data: RouletteData; record: Participation } | { error: string }> {
   const regNormalized = String(participation.registrationNumber || '').trim();
   if (!regNormalized || !participation.factory || !participation.prizeName) {
     return { error: 'Dados da participação incompletos.' };
+  }
+
+  if (!currentData.settings.allowDuplicateRegistration) {
+    const duplicate = currentData.participations.find(
+      (p) => p.registrationNumber.trim().toLowerCase() === regNormalized.toLowerCase(),
+    );
+    if (duplicate) {
+      return {
+        error: `Este registro já participou do sorteio (${duplicate.factory}). Não é permitido registrar o mesmo código duas vezes.`,
+      };
+    }
+  }
+
+  const recordId = safeFirestoreId(
+    `part-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    'part',
+  );
+  const record = sanitizeParticipation({
+    ...participation,
+    id: recordId,
+    timestamp: Date.now(),
+    registrationNumber: regNormalized,
+  });
+
+  const updatedStocks = structuredClone(currentData.settings.stocks);
+  if (record.prizeId) {
+    if (!updatedStocks[record.factory]) {
+      updatedStocks[record.factory] = {};
+    }
+    const avail = Number(updatedStocks[record.factory][record.prizeId] ?? 0);
+    if (avail > 0) {
+      updatedStocks[record.factory][record.prizeId] = avail - 1;
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const data: RouletteData = {
+    version: CURRENT_ROULETTE_VERSION,
+    settings: {
+      ...currentData.settings,
+      stocks: updatedStocks,
+      updatedAt: nowIso,
+    },
+    participations: [record, ...currentData.participations],
+    quizQuestions: currentData.quizQuestions,
+  };
+
+  cacheRouletteLocal(data);
+
+  try {
+    await fetch('/api/roulette/spin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(participation),
+    });
+  } catch {
+    // ignore optional server mirror
+  }
+
+  return { data, record };
+}
+
+export async function recordRouletteSpin(
+  participation: Omit<Participation, 'id' | 'timestamp'>,
+  fallbackData?: RouletteData,
+): Promise<{ data: RouletteData; record: Participation } | { error: string }> {
+  const regNormalized = String(participation.registrationNumber || '').trim();
+  if (!regNormalized || !participation.factory || !participation.prizeName) {
+    return { error: 'Dados da participação incompletos.' };
+  }
+
+  if (quotaFallbackActive && fallbackData) {
+    return recordLocalRouletteSpin(fallbackData, participation);
   }
 
   let configSnap;
@@ -843,6 +1137,10 @@ export async function recordRouletteSpin(
       getDocs(participationsQuery()),
     ]);
   } catch (error) {
+    if (isQuotaExceededError(error) && fallbackData) {
+      quotaFallbackActive = true;
+      return recordLocalRouletteSpin(fallbackData, participation);
+    }
     handleFirestoreError(error, OperationType.GET, 'participations');
   }
 
@@ -883,7 +1181,7 @@ export async function recordRouletteSpin(
         ? structuredClone((stockDoc.data() as WheelStockDoc).stocks)
         : structuredClone(defaults.settings.stocks);
 
-      if (record.outcomeType === 'prize' && record.prizeId) {
+      if (record.prizeId) {
         if (!currentStocks[record.factory]) {
           currentStocks[record.factory] = {};
         }
@@ -898,6 +1196,10 @@ export async function recordRouletteSpin(
       tx.set(doc(db, 'participations', record.id), record);
     });
   } catch (error) {
+    if (isQuotaExceededError(error) && fallbackData) {
+      quotaFallbackActive = true;
+      return recordLocalRouletteSpin(fallbackData, participation);
+    }
     handleFirestoreError(error, OperationType.WRITE, `participations/${record.id}`);
   }
 
@@ -940,23 +1242,43 @@ export async function recordRouletteSpin(
   return { data, record };
 }
 
-export async function clearRouletteParticipations(): Promise<RouletteData> {
-  let partSnap;
-  try {
-    partSnap = await getDocs(participationsQuery());
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'participations');
+export async function clearRouletteParticipations(skipFirestore = false): Promise<RouletteData> {
+  if (!skipFirestore && !quotaFallbackActive) {
+    let partSnap;
+    try {
+      partSnap = await getDocs(participationsQuery());
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+      } else {
+        handleFirestoreError(error, OperationType.LIST, 'participations');
+      }
+    }
+
+    if (partSnap) {
+      const docs = partSnap.docs;
+      try {
+        for (let i = 0; i < docs.length; i += 400) {
+          const batch = writeBatch(db);
+          docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      } catch (error) {
+        if (isQuotaExceededError(error)) {
+          quotaFallbackActive = true;
+        } else {
+          handleFirestoreError(error, OperationType.DELETE, 'participations');
+        }
+      }
+    }
   }
 
-  const docs = partSnap.docs;
-  try {
-    for (let i = 0; i < docs.length; i += 400) {
-      const batch = writeBatch(db);
-      docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-      await batch.commit();
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, 'participations');
+  const local = readLocalRoulette();
+  if (local) {
+    cacheRouletteLocal({
+      ...local,
+      participations: [],
+    });
   }
 
   try {
@@ -965,27 +1287,48 @@ export async function clearRouletteParticipations(): Promise<RouletteData> {
     // ignore
   }
 
+  if (skipFirestore || quotaFallbackActive) {
+    return readLocalRoulette() ?? createDefaultRouletteData();
+  }
+
   return loadRouletteData();
 }
 
-export async function resetRouletteDefaults(): Promise<RouletteData> {
+export async function resetRouletteDefaults(skipFirestore = false): Promise<RouletteData> {
   const defaults = createDefaultRouletteData();
   const nowIso = new Date().toISOString();
 
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, 'settings', 'wheel_config'), buildConfigDoc(defaults.settings));
-    batch.set(doc(db, 'settings', 'wheel_stock'), buildStockDoc(defaults.settings.stocks, nowIso));
-    batch.set(doc(db, 'settings', 'quiz_bank'), buildQuizDoc(defaults.quizQuestions, nowIso));
-    await batch.commit();
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'settings');
+  if (!skipFirestore && !quotaFallbackActive) {
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'settings', 'wheel_config'), buildConfigDoc(defaults.settings));
+      batch.set(doc(db, 'settings', 'wheel_stock'), buildStockDoc(defaults.settings.stocks, nowIso));
+      batch.set(doc(db, 'settings', 'quiz_bank'), buildQuizDoc(defaults.quizQuestions, nowIso));
+      await batch.commit();
+    } catch (error) {
+      if (isQuotaExceededError(error)) {
+        quotaFallbackActive = true;
+      } else {
+        handleFirestoreError(error, OperationType.WRITE, 'settings');
+      }
+    }
   }
+
+  const existingLocal = readLocalRoulette();
+  const nextLocal: RouletteData = {
+    ...defaults,
+    participations: existingLocal?.participations ?? [],
+  };
+  cacheRouletteLocal(nextLocal);
 
   try {
     await fetch('/api/roulette/reset', { method: 'POST' });
   } catch {
     // ignore
+  }
+
+  if (skipFirestore || quotaFallbackActive) {
+    return nextLocal;
   }
 
   return loadRouletteData();

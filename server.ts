@@ -358,7 +358,7 @@ async function startServer(): Promise<void> {
     }
 
     const nextStocks = structuredClone(current.settings.stocks);
-    if (body.outcomeType === 'prize' && body.prizeId) {
+    if (body.prizeId) {
       if (!nextStocks[body.factory]) {
         nextStocks[body.factory] = {};
       }

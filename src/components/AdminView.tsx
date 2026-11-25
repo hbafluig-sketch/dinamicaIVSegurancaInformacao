@@ -1,3 +1,4 @@
+import type { User } from 'firebase/auth';
 import {
   ArrowLeft,
   ArrowRight,
@@ -18,6 +19,7 @@ import type {
   RouletteSettings,
   Scene,
 } from '../types/gincana.ts';
+import type { GoogleSheetConfig } from '../utils/googleSheets.ts';
 import {
   deleteUploadedFile,
   exportProjectBundle,
@@ -26,12 +28,27 @@ import {
   uid,
 } from '../utils/storage.ts';
 import { CLASSIFICATION_META, ClassificationBadge } from './ClassificationBadge.tsx';
+import { GoogleSheetsPanel } from './GoogleSheetsPanel.tsx';
 import { RouletteAdminPanel } from './RouletteAdminPanel.tsx';
 import { SceneStageFrame } from './SceneStageFrame.tsx';
 
 interface AdminViewProps {
   scenes: Scene[];
   rouletteData: RouletteData;
+  googleUser: User | null;
+  hasGoogleToken: boolean;
+  isGoogleSigningIn: boolean;
+  sheetConfig: GoogleSheetConfig | null;
+  sheetBusyAction: string | null;
+  onGoogleSignIn: () => Promise<void>;
+  onGoogleSignOut: () => Promise<void>;
+  onCreateSpreadsheet: (title: string) => Promise<void>;
+  onConnectSpreadsheet: (spreadsheetId: string) => Promise<void>;
+  onToggleSheetAutoSync: (enabled: boolean) => void;
+  onPushAllToSheet: () => Promise<void>;
+  onPullAllFromSheet: () => Promise<void>;
+  onClearSheetParticipations: () => Promise<void>;
+  onDisconnectSheet: () => void;
   onChangeScenes: (next: Scene[]) => Promise<void>;
   onResetDefaults: (preserveCustom: boolean) => Promise<void>;
   onSaveRouletteSettings: (settings: RouletteSettings, quizQuestions: QuizQuestion[]) => Promise<void>;
@@ -72,6 +89,20 @@ type DragAction =
 export function AdminView({
   scenes,
   rouletteData,
+  googleUser,
+  hasGoogleToken,
+  isGoogleSigningIn,
+  sheetConfig,
+  sheetBusyAction,
+  onGoogleSignIn,
+  onGoogleSignOut,
+  onCreateSpreadsheet,
+  onConnectSpreadsheet,
+  onToggleSheetAutoSync,
+  onPushAllToSheet,
+  onPullAllFromSheet,
+  onClearSheetParticipations,
+  onDisconnectSheet,
   onChangeScenes,
   onResetDefaults,
   onSaveRouletteSettings,
@@ -81,7 +112,9 @@ export function AdminView({
   onFinishAdmin,
   onShowToast,
 }: AdminViewProps) {
-  const [adminTab, setAdminTab] = useState<'scenes' | 'wheel' | 'quiz' | 'history'>('scenes');
+  const [adminTab, setAdminTab] = useState<'scenes' | 'wheel' | 'quiz' | 'history' | 'sheets'>(
+    'scenes',
+  );
   const [currentIdx, setCurrentIdx] = useState(0);
   const [selectedRegionIdx, setSelectedRegionIdx] = useState<number | null>(null);
   const [uploadState, setUploadState] = useState<{ active: boolean; pct: number; text: string }>({
@@ -439,6 +472,7 @@ export function AdminView({
                 { id: 'wheel', label: 'Roleta e Estoque' },
                 { id: 'quiz', label: 'Quiz' },
                 { id: 'history', label: 'Histórico e Gráficos' },
+                { id: 'sheets', label: 'Google Sheets' },
               ] as const
             ).map((tab) => (
               <button
@@ -530,7 +564,26 @@ export function AdminView({
         )}
       </section>
 
-      {adminTab !== 'scenes' ? (
+      {adminTab === 'sheets' ? (
+        <GoogleSheetsPanel
+          googleUser={googleUser}
+          hasToken={hasGoogleToken}
+          isSigningIn={isGoogleSigningIn}
+          sheetConfig={sheetConfig}
+          busyAction={sheetBusyAction}
+          participationsCount={rouletteData.participations.length}
+          scenesCount={scenes.length}
+          onSignIn={onGoogleSignIn}
+          onSignOut={onGoogleSignOut}
+          onCreateSpreadsheet={onCreateSpreadsheet}
+          onConnectSpreadsheet={onConnectSpreadsheet}
+          onToggleAutoSync={onToggleSheetAutoSync}
+          onPushAllToSheet={onPushAllToSheet}
+          onPullAllFromSheet={onPullAllFromSheet}
+          onClearSheetParticipations={onClearSheetParticipations}
+          onDisconnectSheet={onDisconnectSheet}
+        />
+      ) : adminTab !== 'scenes' ? (
         <RouletteAdminPanel
           mode={adminTab}
           rouletteData={rouletteData}

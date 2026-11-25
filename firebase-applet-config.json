@@ -1,12 +1,11 @@
 {
-  "projectId": "peta-orbit-c9brs",
-  "appId": "1:177401870236:web:1fcfdfea25750bae507a59",
-  "apiKey": "AIzaSyAYiG66kQE36RU9WDRJmIxeDzA6S-y_FII",
-  "authDomain": "peta-orbit-c9brs.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-gincanadeseguran-fc43e41f-17b9-48d3-8aaf-ef32ccadd1b3",
-  "storageBucket": "peta-orbit-c9brs.firebasestorage.app",
-  "messagingSenderId": "177401870236",
+  "projectId": "gen-lang-client-0748283901",
+  "appId": "1:477590698175:web:6b6c6a77281051d1246e0a",
+  "apiKey": "AIzaSyAmuySWfGuYF5L7mKIckR9I-9yxBWZrHdA",
+  "authDomain": "gen-lang-client-0748283901.firebaseapp.com",
+  "storageBucket": "gen-lang-client-0748283901.firebasestorage.app",
+  "messagingSenderId": "477590698175",
   "measurementId": "",
-  "oAuthClientId": "177401870236-e4ri7j940hse4brdmo9b37djmj76pgiq.apps.googleusercontent.com",
+  "oAuthClientId": "477590698175-jcpdpad71aod98lpds7fr8fh53tfaa0c.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
