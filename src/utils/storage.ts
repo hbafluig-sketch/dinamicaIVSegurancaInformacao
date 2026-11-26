@@ -60,17 +60,26 @@ function normalizeRouletteAssets(data: RouletteData): RouletteData {
   };
 }
 
+export function mergeNewBuiltinScenes(scenes: Scene[]): Scene[] {
+  const existingIds = new Set(scenes.map((s) => s.id));
+  const missingBuiltins = DEFAULT_SCENES.filter((d) => !existingIds.has(d.id)).map((d) =>
+    structuredClone(d),
+  );
+  return missingBuiltins.length > 0 ? [...scenes, ...missingBuiltins] : scenes;
+}
+
 function readLocalProject(): ProjectData | null {
   try {
     const raw = localStorage.getItem(LOCAL_PROJECT_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ProjectData>;
     if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+      const filtered = parsed.scenes.filter((s) => !REMOVED_BUILTIN_IDS.has(s.id));
       return normalizeProjectAssets({
         version: typeof parsed.version === 'number' ? parsed.version : 8,
         updatedAt:
           typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
-        scenes: parsed.scenes.filter((s) => !REMOVED_BUILTIN_IDS.has(s.id)),
+        scenes: mergeNewBuiltinScenes(filtered),
       });
     }
   } catch {
@@ -525,6 +534,8 @@ export async function resetRouletteDefaults(): Promise<RouletteData> {
 
 /* ---------- Image optimization (self-contained data URLs) ---------- */
 
+export const SHEETS_SAFE_IMAGE_CHARS = 45000;
+
 function canvasToDataUrl(canvas: HTMLCanvasElement, quality: number): string {
   const webp = canvas.toDataURL('image/webp', quality);
   if (webp.startsWith('data:image/webp')) return webp;
@@ -536,8 +547,13 @@ async function compressBitmapToLimit(
   maxDimStart: number,
   maxChars: number,
 ): Promise<{ dataUrl: string; width: number; height: number }> {
-  const dimCandidates = [maxDimStart, Math.round(maxDimStart * 0.78), Math.round(maxDimStart * 0.6)];
-  const qualityCandidates = [0.82, 0.7, 0.58, 0.45];
+  const candidateFactors = [1, 0.82, 0.68, 0.54, 0.42, 0.32, 0.24, 0.16];
+  const dimSet = new Set<number>();
+  for (const f of candidateFactors) {
+    dimSet.add(Math.max(160, Math.round(maxDimStart * f)));
+  }
+  const dimCandidates = Array.from(dimSet).sort((a, b) => b - a);
+  const qualityCandidates = [0.82, 0.72, 0.6, 0.48, 0.36, 0.26, 0.18];
 
   let lastUrl = '';
   let lastW = bmp.width;
@@ -566,6 +582,25 @@ async function compressBitmapToLimit(
   return { dataUrl: lastUrl, width: lastW, height: lastH };
 }
 
+export async function compressDataUrlToLimit(
+  dataUrl: string,
+  maxChars = SHEETS_SAFE_IMAGE_CHARS,
+): Promise<string> {
+  if (!dataUrl.startsWith('data:image/') || dataUrl.length <= maxChars) {
+    return dataUrl;
+  }
+  try {
+    const blob = dataUrlToBlob(dataUrl);
+    const bmp = await createImageBitmap(blob);
+    const maxDim = Math.min(1200, Math.max(bmp.width, bmp.height) || 1000);
+    const compressed = await compressBitmapToLimit(bmp, maxDim, maxChars);
+    bmp.close();
+    return compressed.dataUrl;
+  } catch {
+    return dataUrl;
+  }
+}
+
 export async function optimizeAndUploadImage(
   source: File | Blob,
   sceneId: string,
@@ -577,11 +612,11 @@ export async function optimizeAndUploadImage(
   naturalHeight: number;
 }> {
   const bmp = await createImageBitmap(source);
-  const maxDim = options?.maxDim ?? 1400;
-  const maxChars = options?.maxDataUrlChars ?? 500000;
+  const maxDim = options?.maxDim ?? 1200;
+  const maxChars = options?.maxDataUrlChars ?? SHEETS_SAFE_IMAGE_CHARS;
 
   const main = await compressBitmapToLimit(bmp, maxDim, maxChars);
-  const thumb = await compressBitmapToLimit(bmp, 280, 48000);
+  const thumb = await compressBitmapToLimit(bmp, 240, 18000);
   bmp.close();
 
   const ext = main.dataUrl.startsWith('data:image/webp') ? 'webp' : 'jpg';
@@ -610,8 +645,8 @@ export async function optimizeAndUploadImage(
 
 export async function optimizePrizeImage(source: Blob, itemId: string): Promise<string> {
   const result = await optimizeAndUploadImage(source, `prize_${itemId}_${Date.now()}`, {
-    maxDim: 560,
-    maxDataUrlChars: 135000,
+    maxDim: 512,
+    maxDataUrlChars: 38000,
   });
   return result.imageUrl;
 }

@@ -175,10 +175,10 @@ export default function App() {
     const steps: Array<{ label: string; run: () => Promise<Record<string, unknown>> }> = [
       {
         label: 'estoque',
-        run: () =>
+        run: async () =>
           postToAppsScript(
             'estoque',
-            serializeEstoqueForAppsScript(rouletteDataRef.current.settings),
+            await serializeEstoqueForAppsScript(rouletteDataRef.current.settings),
           ),
       },
       {
@@ -191,8 +191,8 @@ export default function App() {
       },
       {
         label: 'cenarios',
-        run: () =>
-          postToAppsScript('cenarios', serializeCenariosForAppsScript(scenesRef.current)),
+        run: async () =>
+          postToAppsScript('cenarios', await serializeCenariosForAppsScript(scenesRef.current)),
       },
     ];
 
@@ -231,8 +231,8 @@ export default function App() {
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => {
         void saveProject(nextScenes)
-          .then((saved) =>
-            postToAppsScript('cenarios', serializeCenariosForAppsScript(saved.scenes)),
+          .then(async (saved) =>
+            postToAppsScript('cenarios', await serializeCenariosForAppsScript(saved.scenes)),
           )
           .then(() => {
             showToast('Enviado para a planilha', 'success');
@@ -254,7 +254,7 @@ export default function App() {
       const data = await resetToDefaultScenes(preserveCustom);
       setScenes(data.scenes);
       try {
-        await postToAppsScript('cenarios', serializeCenariosForAppsScript(data.scenes));
+        await postToAppsScript('cenarios', await serializeCenariosForAppsScript(data.scenes));
         showToast('Enviado para a planilha', 'success');
       } catch (err) {
         console.log('Erro ao enviar cenários padrão para Apps Script:', err);
@@ -371,7 +371,7 @@ export default function App() {
           await postToAppsScript('historico', participationPayload);
           await postToAppsScript(
             'estoque',
-            serializeEstoqueForAppsScript(res.data.settings),
+            await serializeEstoqueForAppsScript(res.data.settings),
           );
           showToast('Enviado para a planilha', 'success');
         } catch (syncErr) {
@@ -416,7 +416,7 @@ export default function App() {
       try {
         await postToAppsScript(
           'estoque',
-          serializeEstoqueForAppsScript(updated.settings),
+          await serializeEstoqueForAppsScript(updated.settings),
         );
         await postToAppsScript('quiz', serializeQuizForAppsScript(updated.quizQuestions));
         showToast('Enviado para a planilha', 'success');
@@ -457,7 +457,7 @@ export default function App() {
         },
       }));
       try {
-        await postToAppsScript('estoque', serializeEstoqueForAppsScript(nextSettings));
+        await postToAppsScript('estoque', await serializeEstoqueForAppsScript(nextSettings));
         showToast('Enviado para a planilha', 'success');
       } catch (err) {
         console.log('Erro ao enviar estoque para Apps Script:', err);
@@ -489,7 +489,7 @@ export default function App() {
     const updated = await resetRouletteDefaults();
     setRouletteData(updated);
     try {
-      await postToAppsScript('estoque', serializeEstoqueForAppsScript(updated.settings));
+      await postToAppsScript('estoque', await serializeEstoqueForAppsScript(updated.settings));
       await postToAppsScript('quiz', serializeQuizForAppsScript(updated.quizQuestions));
       showToast('Enviado para a planilha', 'success');
     } catch (err) {
@@ -521,8 +521,8 @@ export default function App() {
     }
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     void saveProject(scenes)
-      .then((saved) =>
-        postToAppsScript('cenarios', serializeCenariosForAppsScript(saved.scenes)),
+      .then(async (saved) =>
+        postToAppsScript('cenarios', await serializeCenariosForAppsScript(saved.scenes)),
       )
       .then(() => {
         showToast('Enviado para a planilha', 'success');

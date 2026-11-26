@@ -9,6 +9,11 @@ import type {
   WheelItem,
 } from '../types/gincana.ts';
 import { resolveAssetUrl } from './assetUrl.ts';
+import {
+  compressDataUrlToLimit,
+  mergeNewBuiltinScenes,
+  SHEETS_SAFE_IMAGE_CHARS,
+} from './storage.ts';
 
 export const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbynWbFB3-Yq1xgy-FCJq-SAozijNUc6kEYumRFWI-DPHRIItO1dHkxZOp6KDsusBsBPkg/exec';
@@ -476,7 +481,20 @@ function formatDateTimePtBr(ts: number): string {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function serializeEstoqueForAppsScript(settings: RouletteSettings) {
+export async function serializeEstoqueForAppsScript(settings: RouletteSettings) {
+  const safeImages = new Map<string, string>();
+  await Promise.all(
+    settings.items.map(async (item) => {
+      const raw = item.imageUrl ?? '';
+      safeImages.set(
+        item.id,
+        raw.startsWith('data:image/') && raw.length > SHEETS_SAFE_IMAGE_CHARS
+          ? await compressDataUrlToLimit(raw, SHEETS_SAFE_IMAGE_CHARS)
+          : raw,
+      );
+    }),
+  );
+
   const rows: Array<Record<string, unknown>> = [];
   for (const factory of settings.factories) {
     const factoryStocks = settings.stocks[factory] ?? {};
@@ -489,7 +507,7 @@ export function serializeEstoqueForAppsScript(settings: RouletteSettings) {
         outcomeType: item.outcomeType,
         color: item.color,
         weight: item.weight,
-        imageUrl: item.imageUrl ?? '',
+        imageUrl: safeImages.get(item.id) ?? '',
         quizEnabled: settings.quizEnabled ? 'SIM' : 'NAO',
         allowDuplicateRegistration: settings.allowDuplicateRegistration ? 'SIM' : 'NAO',
       });
@@ -508,18 +526,30 @@ export function serializeQuizForAppsScript(quizQuestions: QuizQuestion[]) {
   }));
 }
 
-export function serializeCenariosForAppsScript(scenes: Scene[]) {
-  return scenes.map((s) => ({
-    id: s.id,
-    name: s.name,
-    imageUrl: s.imageUrl,
-    thumbUrl: s.thumbUrl && s.thumbUrl !== s.imageUrl ? s.thumbUrl : '',
-    naturalWidth: s.naturalWidth ?? '',
-    naturalHeight: s.naturalHeight ?? '',
-    hideLegendPct: s.hideLegendPct ?? 0,
-    isBuiltin: Boolean(s.isBuiltin),
-    points: JSON.stringify(s.points),
-  }));
+export async function serializeCenariosForAppsScript(scenes: Scene[]) {
+  return Promise.all(
+    scenes.map(async (s) => {
+      const safeImage =
+        s.imageUrl.startsWith('data:image/') && s.imageUrl.length > SHEETS_SAFE_IMAGE_CHARS
+          ? await compressDataUrlToLimit(s.imageUrl, SHEETS_SAFE_IMAGE_CHARS)
+          : s.imageUrl;
+      const safeThumb =
+        s.thumbUrl && s.thumbUrl !== s.imageUrl && s.thumbUrl.length <= 18000
+          ? s.thumbUrl
+          : '';
+      return {
+        id: s.id,
+        name: s.name,
+        imageUrl: safeImage,
+        thumbUrl: safeThumb,
+        naturalWidth: s.naturalWidth ?? '',
+        naturalHeight: s.naturalHeight ?? '',
+        hideLegendPct: s.hideLegendPct ?? 0,
+        isBuiltin: Boolean(s.isBuiltin),
+        points: JSON.stringify(s.points),
+      };
+    }),
+  );
 }
 
 export function serializeParticipationForAppsScript(record: Participation) {
@@ -710,7 +740,7 @@ export async function fetchFromAppsScript(
         participations,
         quizQuestions: parsedQuiz ?? fallbackRoulette.quizQuestions,
       },
-      scenes: parsedScenes ?? fallbackScenes,
+      scenes: mergeNewBuiltinScenes(parsedScenes ?? fallbackScenes),
       hasRemoteData,
     };
   } finally {
